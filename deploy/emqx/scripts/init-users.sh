@@ -2,54 +2,69 @@
 # ==============================================================================
 # emqx-init-users — tạo/cập nhật user MQTT từ biến môi trường
 #
-# Vì sao: bootstrap CSV chỉ chạy 1 lần (không ghi đè user cũ) và password nằm
-# cứng trong file. Cách này: mỗi lần deploy, container init gọi EMQX HTTP API
-# để PUT user với password lấy từ env → password luôn đồng bộ với .env,
-# không bao giờ nằm trong repo.
+# Password nằm trong .env / tab Environment Dokploy — KHÔNG nằm trong repo.
+# Mỗi lần deploy, container này gọi EMQX HTTP API để PUT user → luôn đồng bộ.
 #
-# Biến môi trường bắt buộc (đặt trong tab Environment của Dokploy):
-#   DASHBOARD_USERNAME / DASHBOARD_PASSWORD  — để gọi EMQX API
-#   MQTT_DEVICE_PASSWORD  — password chung cho các user device-01, device-02
+# EMQX 6: REST API KHÔNG nhận Basic auth (user/password Dashboard) —
+# phải POST /api/v5/login lấy Bearer token trước. Script làm sẵn bước đó.
+#
+# Biến môi trường (đặt trong tab Environment của Dokploy):
+#   DASHBOARD_USERNAME / DASHBOARD_PASSWORD  — login Dashboard lấy token
+#   MQTT_DEVICE_PASSWORD  — password chung cho device users
 #   MQTT_APP_PASSWORD     — password cho web-backend (superuser)
-#
 # Optional:
-#   MQTT_APP_USERNAME  (default: web-backend)
-#   MQTT_DEVICE_USERS  (default: device-01 device-02)
-#
-# Service này chạy xong là thoát (container ngắn hạn).
+#   MQTT_APP_USERNAME (default: web-backend)
+#   MQTT_DEVICE_USERS (default: "device-01 device-02")
 # ==============================================================================
 set -eu
 
-API="http://emqx:18083/api/v5"
-AUTH="${DASHBOARD_USERNAME:-admin}:${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD}"
+HOST="http://emqx:18083"
+API="$HOST/api/v5"
+DASH_USER="${DASHBOARD_USERNAME:-admin}"
+DASH_PASS="${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD}"
 
 APP_USER="${MQTT_APP_USERNAME:-web-backend}"
 DEVICE_USERS="${MQTT_DEVICE_USERS:-device-01 device-02}"
 
-# Chờ EMQX sẵn sàng (tối đa 60s)
+# ----- 1. Chờ EMQX sẵn sàng (tối đa 60s) -------------------------------------
 echo "[init] Chờ EMQX API sẵn sàng..."
 i=0
-until curl -sf -u "$AUTH" "$API/status" >/dev/null 2>&1; do
+until curl -sf "$HOST/status" >/dev/null 2>&1; do
   i=$((i + 1))
   [ "$i" -ge 30 ] && { echo "[init] LỖI: EMQX không phản hồi sau 60s"; exit 1; }
   sleep 2
 done
 echo "[init] EMQX OK"
 
+# ----- 2. Đăng nhập lấy Bearer token (EMQX 6: không còn Basic auth) -----------
+LOGIN=$(curl -s -X POST "$API/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"$DASH_USER\",\"password\":\"$DASH_PASS\"}")
+
+# Token nằm trong trường "token" của response
+TOKEN=$(echo "$LOGIN" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+if [ -z "$TOKEN" ]; then
+  echo "[init] LỖI: Login Dashboard thất bại. Response: $LOGIN"
+  echo "       → DASHBOARD_PASSWORD trong env không khớp password admin broker."
+  echo "       → Fix: docker exec <emqx> emqx ctl admins passwd admin '<PW_TRONG_ENV>'"
+  exit 1
+fi
+echo "[init] Đã lấy Bearer token ✓"
+
+AUTH_HEADER="Authorization: Bearer $TOKEN"
+
+# ----- 3. Hàm upsert user ------------------------------------------------------
 upsert_user() {
   user="$1"
   pass="$2"
   superuser="$3"
 
-  body="{
-    \"user_id\": \"$user\",
-    \"password\": \"$pass\",
-    \"is_superuser\": $superuser
-  }"
+  body="{\"user_id\":\"$user\",\"password\":\"$pass\",\"is_superuser\":$superuser}"
 
-  # PUT = tạo mới hoặc cập nhật đều được
-  http_code=$(curl -s -o /tmp/resp.json -w "%{http_code}" -u "$AUTH" \
+  http_code=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
     -X PUT "$API/authentication/password_based:built_in_database/users/$user" \
+    -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
     -d "$body")
 
@@ -62,15 +77,13 @@ upsert_user() {
   esac
 }
 
-# ----- Device users (không phải superuser) -----
+# ----- 4. Device users (không superuser) --------------------------------------
 for u in $DEVICE_USERS; do
-  pass_var="MQTT_DEVICE_PASSWORD"
-  pass=$(eval echo "\$$pass_var")
-  [ -z "$pass" ] && { echo "[init] LỖI: $pass_var chưa đặt"; exit 1; }
-  upsert_user "$u" "$pass" "false"
+  [ -z "$MQTT_DEVICE_PASSWORD" ] && { echo "[init] LỖI: MQTT_DEVICE_PASSWORD chưa đặt"; exit 1; }
+  upsert_user "$u" "$MQTT_DEVICE_PASSWORD" "false"
 done
 
-# ----- App user (superuser — BE pub/sub mọi topic) -----
+# ----- 5. App user (superuser) -------------------------------------------------
 upsert_user "$APP_USER" "${MQTT_APP_PASSWORD:?Set MQTT_APP_PASSWORD}" "true"
 
 echo "[init] Hoàn tất — user MQTT đồng bộ từ biến môi trường."
