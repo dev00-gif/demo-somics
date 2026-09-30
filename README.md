@@ -2,10 +2,10 @@
 
 Ứng dụng **Next.js** (App Router + TypeScript + Tailwind) gồm:
 
-- **FE**: giao diện web có nút upload file nhạc + form gửi bản tin text + trang `/monitor` xem message live.
+- **FE**: giao diện web có nút upload file nhạc + form gửi bản tin text.
 - **BE**: API routes nhận request từ FE, xử lý rồi **publish lên MQTT broker**.
 - **MQTTX Web**: web client MQTT (connect/subscribe/publish trên browser) cho bên nhúng/QA.
-- **Thiết bị nhúng**: subscribe các topic MQTT, nhận bản tin/file, ghép chunk và phát.
+- **Thiết bị nhúng**: subscribe topic MQTT, nhận bản tin/URL file, tải file và phát.
 
 ```
 ┌─────────┐    HTTP POST     ┌──────────┐     MQTT publish     ┌──────────────┐
@@ -126,36 +126,26 @@ Base topic: `station/player` (đổi qua `MQTT_TOPIC_BASE` nếu muốn).
 }
 ```
 
-### 2. Truyền file nhạc gồm 3 bước
+### 2. `station/player/file/available` (JSON, QoS 1)
 
-**Bước 1 — `station/player/file/meta`** (JSON, QoS 1): thông tin file, gửi trước.
+Khi upload file nhạc, BE lưu file trên web server rồi publish JSON chứa URL tải file:
 
 ```json
 {
+  "type": "file",
+  "delivery": "http",
   "id": "uuid",
   "fileName": "bai-hat.mp3",
   "mimeType": "audio/mpeg",
   "size": 1048576,
-  "chunkSize": 32768,
-  "totalChunks": 32,
-  "sha256": null,
+  "sha256": "hex_sha256",
+  "downloadUrl": "https://station.example.com/api/files/uuid",
   "uploadedAt": "2026-09-30T09:00:00.000Z"
 }
 ```
 
-**Bước 2 — `station/player/file/chunk`** (binary, QoS 1): từng chunk.
-
-```
-[ 4 bytes: chunk index (big-endian uint32) ][ dữ liệu nhị phân ≤ 32KB ]
-```
-
-→ Bên nhúng dùng 4 bytes đầu để ghép đúng thứ tự, đủ `totalChunks` chunk là xong.
-
-**Bước 3 — `station/player/file/end`** (JSON, QoS 1): báo hoàn tất.
-
-```json
-{ "id": "uuid", "fileName": "bai-hat.mp3", "totalChunks": 32, "size": 1048576 }
-```
+Thiết bị subscribe `station/player/#`, khi nhận `type=file` thì HTTP GET `downloadUrl`,
+kiểm tra `sha256` nếu cần, rồi phát/lưu file.
 
 ### 3. `station/player/control` (JSON, tùy chọn)
 
@@ -164,6 +154,6 @@ Base topic: `station/player` (đổi qua `MQTT_TOPIC_BASE` nếu muốn).
 ## Ghi chú kỹ thuật
 
 - **MQTT client singleton**: BE giữ 1 kết nối dài hạn tới broker, chia sẻ cho mọi API routes, tự reconnect mỗi 5s khi broker restart/mất mạng (xem `src/lib/mqtt.ts`). Cache trên `globalThis` để an toàn với hot-reload của Next.js dev.
-- Chunk 32KB an toàn với broker mặc định giới hạn packet 1MB; chỉnh `CHUNK_SIZE` trong `src/lib/mqtt.ts` nếu broker cho phép lớn hơn.
 - QoS 1 đảm bảo message đến ít nhất 1 lần; bên nhúng nên dedupe bằng `id` + `chunk index`.
 - File lớn hơn 20MB bị từ chối ở cả FE lẫn BE.
+- Set `APP_PUBLIC_URL=https://<domain-app>` khi deploy để `downloadUrl` là URL public cho thiết bị nhúng. Nếu bỏ trống, app tự suy ra từ request upload.

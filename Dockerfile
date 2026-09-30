@@ -47,7 +47,9 @@ ENV HOSTNAME=0.0.0.0
 
 # Tạo user non-root để chạy app (không chạy bằng root)
 RUN addgroup --system --gid 1001 nodejs \
-    && adduser --system --uid 1001 nextjs
+    && adduser --system --uid 1001 nextjs \
+    && mkdir -p /app/uploads \
+    && chown -R nextjs:nodejs /app/uploads
 
 # Copy output standalone từ builder (bao gồm server.js tối giản)
 COPY --from=builder /app/public ./public

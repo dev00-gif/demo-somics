@@ -27,6 +27,8 @@ export const TOPICS = {
   fileChunk: `${TOPIC_BASE}/file/chunk`,
   /** Tín hiệu file đã gửi xong */
   fileEnd: `${TOPIC_BASE}/file/end`,
+  /** Thông báo file đã sẵn sàng để thiết bị tải qua HTTP */
+  fileAvailable: `${TOPIC_BASE}/file/available`,
   /** Lệnh điều khiển phát (play/stop/skip...) */
   control: `${TOPIC_BASE}/control`,
 } as const;
@@ -196,6 +198,28 @@ export interface FileMeta {
   totalChunks: number;
   sha256?: string;
   uploadedAt: string;
+}
+
+export interface FileAvailable {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  downloadUrl: string;
+  uploadedAt: string;
+}
+
+/** Gửi thông báo file đã upload xong; thiết bị dùng downloadUrl để tải file. */
+export async function publishFileAvailable(file: FileAvailable): Promise<void> {
+  await publish(
+    TOPICS.fileAvailable,
+    JSON.stringify({
+      ...file,
+      type: "file",
+      delivery: "http",
+    }),
+  );
 }
 
 /**

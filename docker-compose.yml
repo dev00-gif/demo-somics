@@ -103,12 +103,17 @@ services:
       MQTT_PASSWORD: ${MQTT_APP_PASSWORD:-change_me_backend_password}
       MQTT_CLIENT_ID_PREFIX: ${MQTT_CLIENT_ID_PREFIX:-web-uploader}
       MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-station/player}
+      # Public URL của app để thiết bị nhúng tải file từ downloadUrl trong MQTT.
+      # Nếu bỏ trống, app tự suy ra từ Host/x-forwarded-* của request upload.
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
     # KHÔNG publish port app ra host khi chạy trên Dokploy — port 3000 đã bị
     # Dashboard Dokploy chiếm. Truy cập app qua Dokploy → Domains (Traefik →
     # container qua dokploy-network). Chạy compose ngoài Dokploy thì thêm lại:
     #   ports:
     #     - "${APP_PORT:-3000}:3000"
     restart: unless-stopped
+    volumes:
+      - app_uploads:/app/uploads
     deploy:
       resources:
         limits:
@@ -174,3 +179,4 @@ networks:
 volumes:
   emqx_data:
   emqx_log:
+  app_uploads:

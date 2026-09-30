@@ -10,7 +10,8 @@ interface UploadResult {
     id: string;
     fileName: string;
     size: number;
-    totalChunks: number;
+    sha256: string;
+    downloadUrl: string;
   };
 }
 
@@ -190,7 +191,7 @@ export default function Home() {
             📡 MQTT Station — Gửi bản tin &amp; file nhạc
           </h1>
           <p className="text-sm text-slate-400">
-            FE upload → BE xử lý → publish MQTT → thiết bị nhúng nhận &amp; phát
+            FE upload → BE xử lý → publish MQTT → thiết bị nhúng tải &amp; phát
           </p>
         </header>
 
@@ -199,7 +200,7 @@ export default function Home() {
           <section className="rounded-2xl border border-slate-700 bg-slate-800/60 p-6 shadow-lg">
             <h2 className="mb-1 text-lg font-semibold">🎵 Gửi file nhạc</h2>
             <p className="mb-4 text-sm text-slate-400">
-              Chọn file mp3/wav (tối đa 20MB). BE sẽ chia chunk và publish lên MQTT.
+              Chọn file mp3/wav (tối đa 20MB). BE sẽ gửi URL tải file qua MQTT.
             </p>
 
             {/* Nút upload */}
@@ -365,7 +366,7 @@ export default function Home() {
         </div>
 
         <footer className="mt-8 text-center text-xs text-slate-500">
-          Topics: station/player/announcement · file/meta · file/chunk · file/end
+          Topics: station/player/announcement · station/player/file/available
         </footer>
       </div>
     </main>
