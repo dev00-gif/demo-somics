@@ -48,7 +48,7 @@ MQTT_DEVICE_PASSWORD=<mật khẩu chung cho device-01, device-02>
 ```
 
 > `web-backend` là superuser (pub/sub mọi topic). Thiết bị để thường + giới hạn bằng ACL (Dashboard → Access Control → Authorization) nếu muốn.
-> Mỗi lần deploy, `emqx-init` chạy `scripts/init-users.sh` → PUT user qua API → password luôn đồng bộ env, đổi mật khẩu = sửa env + redeploy.
+> Mỗi lần deploy, `emqx-init` chạy `scripts/init-users.sh` → tạo/cập nhật user qua API → password luôn đồng bộ env, đổi mật khẩu = sửa env + redeploy.
 
 ## 3. Các bước deploy trên Dokploy
 
@@ -147,7 +147,8 @@ Mở `.env.local` (dev) theo mẫu `.env.example` ở root project, rồi chạy
 
 ## 6. Quản lý user MQTT sau khi deploy
 
-Bootstrap chỉ chạy **lần đầu**. Sau đó quản lý qua Dashboard:
+Service `emqx-init` chạy mỗi lần deploy để đồng bộ các user khai báo trong env.
+Với user ngoài danh sách bootstrap hoặc ACL chi tiết, quản lý qua Dashboard:
 
 1. Truy cập Dashboard (tunnel hoặc domain) → **Access Control → Authentication**.
 2. Chọn authenticator `password_based:built_in_database`.
@@ -252,7 +253,7 @@ Với self-signed CA, thêm vào `src/lib/mqtt.ts` options: `ca: fs.readFileSync
 | Mất user sau khi tạo lại container | `EMQX_NODE_NAME`/`hostname` bị đổi → data mnesia thành thư mục khác. Giữ nguyên 2 biến này. |
 | User MQTT không tồn tại sau deploy | Service `emqx-init` fail — xem log nó trong Dokploy; thường do `DASHBOARD_PASSWORD` env chưa khớp password admin broker. |
 | Container `unhealthy` liên tục | Xem `docker logs emqx`. Thường do RAM thiếu (tăng `EMQX_MEM_LIMIT`) hoặc cookie/node name xung đột. |
-| Quên mật khẩu Dashboard | `docker exec -it emqx emqx ctl admins reset-password <user>` (hoặc xóa volume + deploy lại, mất toàn bộ user MQTT). |
+| Quên mật khẩu Dashboard | `docker exec -it emqx emqx ctl admins passwd <user> '<new-password>'` (hoặc xóa volume + deploy lại, mất toàn bộ user MQTT). |
 | Port 1883 không nối từ ngoài | `sudo ufw status` — chưa mở port, hoặc `MQTT_TCP_BIND=127.0.0.1`. |
 | TLS 8883 handshake fail (`certificate verify failed`) | Client chưa có `ca.crt` hoặc sai file — client phải dùng đúng CA đã ký server cert. |
 | TLS lỗi `Hostname/IP does not match certificate` | Cert tạo thiếu SAN — chạy lại `./gen-certs.sh <đúng domain/IP client dùng>`. |

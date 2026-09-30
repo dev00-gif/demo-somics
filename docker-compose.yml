@@ -98,7 +98,7 @@ services:
       # App gọi broker qua mạng nội bộ Docker — KHÔNG đi ra internet
       MQTT_URL: mqtt://emqx:1883
       # App đăng nhập broker — password được đồng bộ qua service emqx-init
-      # (nó PUT user web-backend vào broker từ biến MQTT_APP_PASSWORD).
+      # (nó tạo/cập nhật user web-backend từ biến MQTT_APP_PASSWORD).
       MQTT_USERNAME: ${MQTT_APP_USERNAME:-web-backend}
       MQTT_PASSWORD: ${MQTT_APP_PASSWORD:-change_me_backend_password}
       MQTT_CLIENT_ID_PREFIX: ${MQTT_CLIENT_ID_PREFIX:-web-uploader}

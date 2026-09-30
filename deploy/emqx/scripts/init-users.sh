@@ -3,7 +3,7 @@
 # emqx-init-users — tạo/cập nhật user MQTT từ biến môi trường
 #
 # Password nằm trong .env / tab Environment Dokploy — KHÔNG nằm trong repo.
-# Mỗi lần deploy, container này gọi EMQX HTTP API để PUT user → luôn đồng bộ.
+# Mỗi lần deploy, container này gọi EMQX HTTP API để tạo/cập nhật user → luôn đồng bộ.
 #
 # EMQX 6: REST API KHÔNG nhận Basic auth (user/password Dashboard) —
 # phải POST /api/v5/login lấy Bearer token trước. Script làm sẵn bước đó.
@@ -26,6 +26,10 @@ DASH_PASS="${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD}"
 APP_USER="${MQTT_APP_USERNAME:-web-backend}"
 DEVICE_USERS="${MQTT_DEVICE_USERS:-device-01 device-02}"
 
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 # ----- 1. Chờ EMQX sẵn sàng (tối đa 60s) -------------------------------------
 echo "[init] Chờ EMQX API sẵn sàng..."
 i=0
@@ -39,7 +43,7 @@ echo "[init] EMQX OK"
 # ----- 2. Đăng nhập lấy Bearer token (EMQX 6: không còn Basic auth) -----------
 LOGIN=$(curl -s -X POST "$API/login" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"$DASH_USER\",\"password\":\"$DASH_PASS\"}")
+  -d "{\"username\":\"$(json_escape "$DASH_USER")\",\"password\":\"$(json_escape "$DASH_PASS")\"}")
 
 # Token nằm trong trường "token" của response
 TOKEN=$(echo "$LOGIN" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -60,16 +64,39 @@ upsert_user() {
   pass="$2"
   superuser="$3"
 
-  body="{\"user_id\":\"$user\",\"password\":\"$pass\",\"is_superuser\":$superuser}"
+  case "$superuser" in
+    true|false) ;;
+    *) echo "[init] LỖI: is_superuser không hợp lệ cho $user: $superuser"; exit 1 ;;
+  esac
+
+  json_user=$(json_escape "$user")
+  json_pass=$(json_escape "$pass")
+  update_body="{\"password\":\"$json_pass\",\"is_superuser\":$superuser}"
+  create_body="{\"user_id\":\"$json_user\",\"password\":\"$json_pass\",\"is_superuser\":$superuser}"
 
   http_code=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
     -X PUT "$API/authentication/password_based:built_in_database/users/$user" \
     -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
-    -d "$body")
+    -d "$update_body")
 
   case "$http_code" in
-    200|201) echo "[init] ✓ $user đã cập nhật (password từ env)" ;;
+    200) echo "[init] ✓ $user đã cập nhật (password từ env)" ;;
+    404)
+      http_code=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+        -X POST "$API/authentication/password_based:built_in_database/users" \
+        -H "$AUTH_HEADER" \
+        -H "Content-Type: application/json" \
+        -d "$create_body")
+
+      case "$http_code" in
+        201) echo "[init] ✓ $user đã tạo (password từ env)" ;;
+        *)
+          echo "[init] ✗ $user thất bại khi tạo (HTTP $http_code): $(cat /tmp/resp.json)"
+          exit 1
+          ;;
+      esac
+      ;;
     *)
       echo "[init] ✗ $user thất bại (HTTP $http_code): $(cat /tmp/resp.json)"
       exit 1
