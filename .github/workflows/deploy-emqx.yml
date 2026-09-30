@@ -1,0 +1,65 @@
+name: Deploy EMQX MQTT Broker (Dokploy)
+
+# Trigger: push thay đổi trong deploy/emqx/** lên nhánh main
+# (hoặc chạy thủ công từ tab Actions)
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/emqx/**"
+      - ".github/workflows/deploy-emqx.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-emqx
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Trigger Dokploy redeploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gọi Dokploy API — compose.deploy
+        id: deploy
+        run: |
+          set -euo pipefail
+
+          HTTP_CODE=$(curl -sS -o /tmp/dokploy_response.json -w "%{http_code}" \
+            -X POST \
+            "${{ secrets.DOKPLOY_URL }}/api/compose.deploy" \
+            -H "x-api-key: ${{ secrets.DOKPLOY_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"composeId": "${{ secrets.DOKPLOY_COMPOSE_ID }}"}') || {
+              echo "::error::Không gọi được Dokploy API — kiểm tra DOKPLOY_URL"
+              exit 1
+            }
+
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/dokploy_response.json || true
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Dokploy deploy thất bại (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+      - name: Chờ broker khỏe lại (health check qua VPS không khả thi từ GitHub — bỏ qua)
+        run: |
+          echo "Dokploy đã nhận yêu cầu deploy. Kiểm tra trạng thái container:"
+          echo "  ssh <vps> 'docker ps | grep emqx'  → chờ Up (healthy)"
+          echo "Lưu ý: API compose.deploy là async — GitHub Actions chỉ xác nhận"
+          echo "việc trigger thành công, không xác nhận kết quả deploy."
+
+      - name: Tóm tắt
+        if: always()
+        run: |
+          echo "### Kết quả deploy EMQX" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Repository: $GITHUB_REPOSITORY" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: $GITHUB_SHA" >> $GITHUB_STEP_SUMMARY
+          echo "- Trigger: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Xem log deploy chi tiết trong Dokploy UI → service emqx-broker" >> $GITHUB_STEP_SUMMARY

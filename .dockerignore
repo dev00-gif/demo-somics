@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.github
+.env
+.env*.local
+*.log
+npm-debug.log*
+README.md
+deploy/
+.freebuff/
+.DS_Store

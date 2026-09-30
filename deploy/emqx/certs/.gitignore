@@ -1,0 +1,4 @@
+# Chứng chỉ chứa private key — KHÔNG commit
+*
+!.gitignore
+!gen-certs.sh

@@ -1,0 +1,140 @@
+# ==============================================================================
+# EMQX MQTT Broker — Docker Compose cho VPS Ubuntu (deploy bằng Dokploy)
+#
+# Kiến trúc: FE (Next.js) → BE (API route) → EMQX (broker) → Thiết bị nhúng
+#
+# Cách dùng:
+#   - Deploy qua Dokploy: dán file này vào mục "Docker Compose" của service,
+#     khai báo env trong tab Environment (xem .env.example).
+#   - Hoặc chạy trực tiếp:  docker compose --env-file .env up -d
+# ==============================================================================
+
+services:
+  emqx:
+    # Bản stable open-source (BSL 1.1) — ghim patch version để deploy tái lập được.
+    # Nâng cấp: sửa số version rồi redeploy (volume giữ nguyên dữ liệu).
+    image: emqx/emqx:${EMQX_VERSION:-6.1.5}
+
+    container_name: ${EMQX_CONTAINER_NAME:-emqx}
+
+    # ----- Hostname/node name -------------------------------------------------
+    # EMQX lưu data theo node name (data/mnesia/<node_name>). Ghim hostname +
+    # EMQX_NODE_NAME để không mất user/session khi container được tạo lại.
+    hostname: ${EMQX_NODE_HOST:-node1.emqx.local}
+    environment:
+      EMQX_NODE_NAME: emqx@${EMQX_NODE_HOST:-node1.emqx.local}
+      # Cookie Erlang dùng cho cluster — bắt buộc đổi thành chuỗi ngẫu nhiên
+      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:?Set EMQX_NODE_COOKIE in .env}
+
+      # ----- Tài khoản Dashboard (web quản trị :18083) -------------------------
+      # Lần đầu khởi động, EMQX tạo user admin từ 2 biến này (không còn admin/public)
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${DASHBOARD_USERNAME:-admin}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD in .env}
+
+      # ----- Xác thực MQTT bằng built-in database -------------------------------
+      # Tạo sẵn authenticator "password_based:built_in_database" khi boot.
+      # Khi có >=1 authenticator, mọi kết nối không có username/password bị từ chối
+      #  → đó chính là cách tắt anonymous access của EMQX 5/6.
+      EMQX_AUTHENTICATION__1__MECHANISM: password_based
+      EMQX_AUTHENTICATION__1__BACKEND: built_in_database
+      EMQX_AUTHENTICATION__1__USER_ID_TYPE: username
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: '{"name":"sha256","salt_position":"suffix"}'
+
+      # Nạp user MQTT từ file CSV lần đầu authenticator được tạo (xem ./emqx/auth-bootstrap.csv)
+      EMQX_AUTHENTICATION__1__BOOTSTRAP_FILE: ${EMQX_ETC_DIR:-/opt/emqx/etc}/auth-bootstrap.csv
+      EMQX_AUTHENTICATION__1__BOOTSTRAP_TYPE: plain
+
+      # Ẩn version ra endpoint /status công khai (hardening, mặc định đã vậy từ 5.10.4)
+      EMQX_LOG__CONSOLE_HANDLER__ENABLE: "true"
+      EMQX_LOG__CONSOLE_HANDLER__LEVEL: ${EMQX_LOG_LEVEL:-warning}
+
+      # ----- Listener MQTT TLS (port 8883) --------------------------------------
+      # EMQX 6 đã có sẵn listener ssl.default ở 8883 (one-way TLS, verify_none).
+      # Ở đây chỉ trỏ tới chứng chỉ do ./certs/gen-certs.sh tạo (mount bên dưới).
+      # Device nhúng copy ca.crt về máy để verify server khi kết nối mqtts://.
+      EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /opt/emqx/etc/certs/ca.crt
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/server.crt
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/server.key
+      # One-way TLS: server KHÔNG verify client cert (client xác thực bằng
+      # username/password qua built-in database). Đổi verify_peer +
+      # fail_if_no_peer_cert=true nếu muốn mTLS (mỗi thiết bị 1 client cert).
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERIFY: verify_none
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "false"
+
+    # ----- Port ----------------------------------------------------------------
+    # Chỉ publish những port thật sự cần:
+    #   1883  : MQTT TCP        — FE/BE + thiết bị nhúng (nội mạng tin cậy)
+    #   8883  : MQTT TLS        — thiết bị nhúng kết nối encrypt (khuyến nghị)
+    #   18083 : EMQX Dashboard  — quản trị web (nên giới hạn IP truy cập, xem README)
+    # KHÔNG mở: 8083/8084 (WS/WSS), 4370 (Erlang dist), 18084…
+    # Nếu BE Next.js cũng chạy trong Docker/Dokploy thì KHÔNG cần publish 1883 ra
+    # host — chỉ cần join mạng "dokploy-network" (đã cấu hình bên dưới).
+    ports:
+      - "${MQTT_TCP_BIND:-0.0.0.0}:1883:1883"
+      - "${MQTT_TLS_BIND:-0.0.0.0}:8883:8883"
+      - "${DASHBOARD_BIND:-127.0.0.1}:18083:18083"
+
+    # ----- Volume (chống mất dữ liệu khi restart/redeploy) ---------------------
+    volumes:
+      - emqx_data:/opt/emqx/data   # DB user, session config, retained messages…
+      - emqx_log:/opt/emqx/log     # file log + crash dump
+      # User MQTT khởi tạo (chỉ đọc). Lưu ý: khi dán compose trực tiếp vào Dokploy
+      # (không dùng Git source), đường dẫn tương đối không tồn tại → thay bằng
+      # tab Advanced → Files của Dokploy (xem README mục 3, bước 4).
+      - ./emqx/auth-bootstrap.csv:/opt/emqx/etc/auth-bootstrap.csv:ro
+      # Chứng chỉ TLS (chỉ đọc) — tạo bằng: ./certs/gen-certs.sh <domain-hoặc-IP>
+      # File server.key là private key: KHÔNG commit, KHÔNG share.
+      - ./certs/ca.crt:/opt/emqx/etc/certs/ca.crt:ro
+      - ./certs/server.crt:/opt/emqx/etc/certs/server.crt:ro
+      - ./certs/server.key:/opt/emqx/etc/certs/server.key:ro
+
+    # ----- Chống treo "zombie": healthcheck nội bộ ------------------------------
+    # Nếu check thất bại liên tục, container bị đánh dấu unhealthy → Dokploy/Docker
+    # sẽ thấy trạng thái và orchestrator có thể khởi động lại.
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 30s
+
+    # ----- Tự restart -----------------------------------------------------------
+    # "unless-stopped": tự bật lại khi VPS reboot hoặc container crash,
+    # trừ khi bạn chủ động `docker stop`.
+    restart: unless-stopped
+
+    # Giới hạn tài nguyên để broker không "ngốn" cả VPS
+    deploy:
+      resources:
+        limits:
+          memory: ${EMQX_MEM_LIMIT:-1g}
+        reservations:
+          memory: 256m
+
+    networks:
+      dokploy-network:
+        # Alias để các service khác trong cùng mạng gọi: mqtt://emqx:1883
+        aliases:
+          - mqtt
+
+# ==============================================================================
+# NETWORK
+# ------------------------------------------------------------------------------
+# Dokploy tạo sẵn mạng overlay "dokploy-network". Join mạng này để:
+#   1) Backend Next.js (chạy trong Dokploy) gọi thẳng emqx:1883 không cần ra internet
+#   2) Có thể gắn domain + HTTPS cho Dashboard qua Dokploy (external network)
+# external: true → compose không tự tạo, dùng mạng Dokploy đã có sẵn.
+# Nếu chạy ngoài Dokploy, bỏ "external: true" hoặc đổi thành mạng thường.
+# ==============================================================================
+networks:
+  dokploy-network:
+    external: true
+
+# ==============================================================================
+# VOLUMES — Docker quản lý vòng đời, dữ liệu sống sót qua restart/redeploy.
+# Xóa hẳn bằng: docker volume rm <project>_emqx_data <project>_emqx_log
+# ==============================================================================
+volumes:
+  emqx_data:
+  emqx_log:
