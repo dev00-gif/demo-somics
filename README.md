@@ -147,6 +147,8 @@ Khi upload file nhạc, BE lưu file trên web server rồi publish JSON chứa 
 
 Thiết bị subscribe `station/player/#`, khi nhận `type=file` thì HTTP GET `downloadUrl`,
 kiểm tra `sha256` nếu cần, rồi phát/lưu file.
+Message file này được publish dạng retained, nên thiết bị kết nối sau vẫn nhận được
+file mới nhất ngay khi subscribe.
 
 ### 3. `station/player/control` (JSON, tùy chọn)
 
@@ -156,5 +158,6 @@ kiểm tra `sha256` nếu cần, rồi phát/lưu file.
 
 - **MQTT client singleton**: BE giữ 1 kết nối dài hạn tới broker, chia sẻ cho mọi API routes, tự reconnect mỗi 5s khi broker restart/mất mạng (xem `src/lib/mqtt.ts`). Cache trên `globalThis` để an toàn với hot-reload của Next.js dev.
 - QoS 1 đảm bảo message đến ít nhất 1 lần; bên nhúng nên dedupe bằng `id`.
+- MQTT broker không lưu lịch sử message thường. `station/player/file/available` dùng retained message để subscriber mới nhận file mới nhất; các announcement cũ chỉ hiện trong history local của MQTTX.
 - File lớn hơn 20MB bị từ chối ở cả FE lẫn BE.
 - Set `APP_PUBLIC_URL=https://<domain-app>` khi deploy để `downloadUrl` là URL public cho thiết bị nhúng. Nếu bỏ trống, app tự suy ra từ request upload.

@@ -148,9 +148,10 @@ export function publishAsync(
   topic: string,
   payload: string | Buffer,
   qos: 0 | 1 = 1,
+  retain = false,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    client.publish(topic, payload, { qos }, (err) => {
+    client.publish(topic, payload, { qos, retain }, (err) => {
       if (err) reject(err);
       else resolve();
     });
@@ -158,9 +159,14 @@ export function publishAsync(
 }
 
 /** Publish qua singleton — API routes gọi hàm này, không tự quản lý connection */
-async function publish(topic: string, payload: string | Buffer, qos: 0 | 1 = 1): Promise<void> {
+async function publish(
+  topic: string,
+  payload: string | Buffer,
+  qos: 0 | 1 = 1,
+  retain = false,
+): Promise<void> {
   const client = await getMqttClient();
-  await publishAsync(client, topic, payload, qos);
+  await publishAsync(client, topic, payload, qos, retain);
 }
 
 /** Gửi bản tin dạng JSON lên topic announcement */
@@ -199,6 +205,8 @@ export async function publishFileAvailable(file: FileAvailable): Promise<void> {
       type: "file",
       delivery: "http",
     }),
+    1,
+    true,
   );
 }
 
