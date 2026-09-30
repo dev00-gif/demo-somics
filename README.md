@@ -29,9 +29,13 @@ nano deploy/emqx/emqx/auth-bootstrap.csv  # sửa mật khẩu user MQTT khớp 
 docker compose up -d --build
 ```
 
-> Trên **Dokploy**: không cần file `.env` — paste các biến này vào tab
-> **Environment** của service Docker Compose (Dokploy inject giúp bạn).
-> Riêng `auth-bootstrap.csv` vẫn phải có trong repo/deploy để mount vào container.
+> **Trên Dokploy:**
+> - Không cần file `.env` — paste biến vào tab **Environment** của service (tùy chọn, compose có default).
+> - App **không publish port** ra host (tránh đụng port 3000 của Dashboard Dokploy) — truy cập qua
+>   **Domains** tab: thêm domain, port `3000`, service `app`, HTTPS Let's Encrypt. App đã join
+>   `dokploy-network` sẵn trong compose.
+> - Chạy ngoài Dokploy (VPS thuần): uncomment dòng ports 3000 trong compose và xóa
+>   `dokploy-network` nếu chưa có.
 
 → App: `http://localhost:3000` · Dashboard EMQX: `ssh -L 18083:127.0.0.1:18083 <vps>` rồi mở `http://localhost:18083`
 

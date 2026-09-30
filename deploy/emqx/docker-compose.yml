@@ -23,13 +23,15 @@ services:
     hostname: ${EMQX_NODE_HOST:-node1.emqx.local}
     environment:
       EMQX_NODE_NAME: emqx@${EMQX_NODE_HOST:-node1.emqx.local}
-      # Cookie Erlang dùng cho cluster — bắt buộc đổi thành chuỗi ngẫu nhiên
-      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:?Set EMQX_NODE_COOKIE in .env}
+      # Cookie Erlang: KHÔNG đặt env = dùng default (chỉ dev/test).
+      # Production: đặt EMQX_NODE_COOKIE trong tab Environment của Dokploy.
+      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:-insecure-default-cookie-CHANGE-ME}
 
       # ----- Tài khoản Dashboard (web quản trị :18083) -------------------------
-      # Lần đầu khởi động, EMQX tạo user admin từ 2 biến này (không còn admin/public)
+      # KHÔNG đặt = fallback admin/public, EMQX buộc đổi mật khẩu ở lần login đầu.
+      # Dashboard bind 127.0.0.1 nên rủi ro thấp, nhưng production nên đặt env này.
       EMQX_DASHBOARD__DEFAULT_USERNAME: ${DASHBOARD_USERNAME:-admin}
-      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD in .env}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${DASHBOARD_PASSWORD:-}
 
       # ----- Xác thực MQTT bằng built-in database -------------------------------
       # Tạo sẵn authenticator "password_based:built_in_database" khi boot.
@@ -48,19 +50,17 @@ services:
       EMQX_LOG__CONSOLE_HANDLER__ENABLE: "true"
       EMQX_LOG__CONSOLE_HANDLER__LEVEL: ${EMQX_LOG_LEVEL:-warning}
 
-      # ----- Listener MQTT TLS (port 8883) --------------------------------------
-      # EMQX 6 đã có sẵn listener ssl.default ở 8883 (one-way TLS, verify_none).
-      # Ở đây chỉ trỏ tới chứng chỉ do ./certs/gen-certs.sh tạo (mount bên dưới).
-      # Device nhúng copy ca.crt về máy để verify server khi kết nối mqtts://.
-      EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /opt/emqx/etc/certs/ca.crt
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/server.crt
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/server.key
-      # One-way TLS: server KHÔNG verify client cert (client xác thực bằng
-      # username/password qua built-in database). Đổi verify_peer +
-      # fail_if_no_peer_cert=true nếu muốn mTLS (mỗi thiết bị 1 client cert).
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERIFY: verify_none
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "false"
+      # ===== Listener MQTT TLS (port 8883) — TẮT MẶC ĐỊNH =======================
+      # File cert KHÔNG nằm trong repo (gitignore key) → bật TLS khi đã tạo cert:
+      #   (1) ./certs/gen-certs.sh <domain/IP>  (2) đưa cert lên VPS/repo
+      #   (3) uncomment khối SSL + port 8883 + 3 dòng mount cert bên dưới.
+      # Hướng dẫn: README.md mục 8.
+      # EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /opt/emqx/etc/certs/ca.crt
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/server.crt
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/server.key
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERIFY: verify_none
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "false"
 
     # ----- Port ----------------------------------------------------------------
     # Chỉ publish những port thật sự cần:
@@ -72,7 +72,7 @@ services:
     # host — chỉ cần join mạng "dokploy-network" (đã cấu hình bên dưới).
     ports:
       - "${MQTT_TCP_BIND:-0.0.0.0}:1883:1883"
-      - "${MQTT_TLS_BIND:-0.0.0.0}:8883:8883"
+      # - "${MQTT_TLS_BIND:-0.0.0.0}:8883:8883"   # bật khi có chứng chỉ TLS
       - "${DASHBOARD_BIND:-127.0.0.1}:18083:18083"
 
     # ----- Volume (chống mất dữ liệu khi restart/redeploy) ---------------------
@@ -83,11 +83,10 @@ services:
       # (không dùng Git source), đường dẫn tương đối không tồn tại → thay bằng
       # tab Advanced → Files của Dokploy (xem README mục 3, bước 4).
       - ./emqx/auth-bootstrap.csv:/opt/emqx/etc/auth-bootstrap.csv:ro
-      # Chứng chỉ TLS (chỉ đọc) — tạo bằng: ./certs/gen-certs.sh <domain-hoặc-IP>
-      # File server.key là private key: KHÔNG commit, KHÔNG share.
-      - ./certs/ca.crt:/opt/emqx/etc/certs/ca.crt:ro
-      - ./certs/server.crt:/opt/emqx/etc/certs/server.crt:ro
-      - ./certs/server.key:/opt/emqx/etc/certs/server.key:ro
+      # Chứng chỉ TLS — uncomment cùng khối SSL phía trên khi đã tạo cert:
+      # - ./certs/ca.crt:/opt/emqx/etc/certs/ca.crt:ro
+      # - ./certs/server.crt:/opt/emqx/etc/certs/server.crt:ro
+      # - ./certs/server.key:/opt/emqx/etc/certs/server.key:ro
 
     # ----- Chống treo "zombie": healthcheck nội bộ ------------------------------
     # Nếu check thất bại liên tục, container bị đánh dấu unhealthy → Dokploy/Docker

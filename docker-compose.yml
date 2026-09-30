@@ -22,9 +22,13 @@ services:
     hostname: ${EMQX_NODE_HOST:-node1.emqx.local}
     environment:
       EMQX_NODE_NAME: emqx@${EMQX_NODE_HOST:-node1.emqx.local}
-      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:?Set EMQX_NODE_COOKIE (.env hoặc tab Environment trên Dokploy)}
+      # Cookie Erlang: KHÔNG đặt env = dùng default (chỉ dev/test).
+      # Production: đặt EMQX_NODE_COOKIE trong tab Environment của Dokploy.
+      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:-insecure-default-cookie-CHANGE-ME}
       EMQX_DASHBOARD__DEFAULT_USERNAME: ${DASHBOARD_USERNAME:-admin}
-      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD (.env hoặc tab Environment trên Dokploy)}
+      # KHÔNG đặt = fallback admin/public, EMQX buộc đổi mật khẩu ở lần login đầu.
+      # Dashboard bind 127.0.0.1 nên rủi ro thấp, nhưng production nên đặt env này.
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${DASHBOARD_PASSWORD:-}
       # Tắt anonymous: khai báo authenticator built-in database + bootstrap user
       EMQX_AUTHENTICATION__1__MECHANISM: password_based
       EMQX_AUTHENTICATION__1__BACKEND: built_in_database
@@ -35,30 +39,29 @@ services:
       EMQX_LOG__CONSOLE_HANDLER__ENABLE: "true"
       EMQX_LOG__CONSOLE_HANDLER__LEVEL: ${EMQX_LOG_LEVEL:-warning}
 
-      # ----- Listener MQTT TLS (port 8883) --------------------------------------
-      # Trỏ tới chứng chỉ do deploy/emqx/certs/gen-certs.sh tạo (mount bên dưới).
-      # Thiết bị nhúng copy ca.crt về máy để verify server khi kết nối mqtts://.
-      EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /opt/emqx/etc/certs/ca.crt
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/server.crt
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/server.key
-      # One-way TLS: client xác thực bằng username/password (built-in database).
-      # Đổi verify_peer + fail_if_no_peer_cert=true nếu muốn mTLS.
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERIFY: verify_none
-      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "false"
+      # ===== MQTT TLS (8883) — TẮT MẶC ĐỊNH =====================================
+      # Muốn bật: (1) chạy cd deploy/emqx/certs && ./gen-certs.sh <domain/IP>,
+      # (2) commit ca.crt/server.crt/server.key vào repo (hoặc đưa lên VPS bằng tay),
+      # (3) uncomment các dòng SSL bên dưới + port 8883 + 3 dòng mount cert.
+      # Hướng dẫn đầy đủ: deploy/emqx/README.md mục 8.
+      # EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /opt/emqx/etc/certs/ca.crt
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/server.crt
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/server.key
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERIFY: verify_none
+      # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "false"
     ports:
       - "${MQTT_TCP_BIND:-0.0.0.0}:1883:1883"      # MQTT TCP (nội mạng tin cậy)
-      - "${MQTT_TLS_BIND:-0.0.0.0}:8883:8883"      # MQTT TLS — dùng cho thiết bị bên ngoài
+      # - "${MQTT_TLS_BIND:-0.0.0.0}:8883:8883"    # bật khi có chứng chỉ TLS
       - "${DASHBOARD_BIND:-127.0.0.1}:18083:18083" # Dashboard — chỉ localhost mặc định
     volumes:
       - emqx_data:/opt/emqx/data
       - emqx_log:/opt/emqx/log
       - ./deploy/emqx/emqx/auth-bootstrap.csv:/opt/emqx/etc/auth-bootstrap.csv:ro
-      # Chứng chỉ TLS (chỉ đọc) — tạo bằng:
-      #   cd deploy/emqx/certs && ./gen-certs.sh <domain-hoặc-IP-VPS>
-      - ./deploy/emqx/certs/ca.crt:/opt/emqx/etc/certs/ca.crt:ro
-      - ./deploy/emqx/certs/server.crt:/opt/emqx/etc/certs/server.crt:ro
-      - ./deploy/emqx/certs/server.key:/opt/emqx/etc/certs/server.key:ro
+      # Chứng chỉ TLS — uncomment cùng khối SSL phía trên khi đã tạo cert:
+      # - ./deploy/emqx/certs/ca.crt:/opt/emqx/etc/certs/ca.crt:ro
+      # - ./deploy/emqx/certs/server.crt:/opt/emqx/etc/certs/server.crt:ro
+      # - ./deploy/emqx/certs/server.key:/opt/emqx/etc/certs/server.key:ro
     healthcheck:
       test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
       interval: 30s
@@ -89,12 +92,18 @@ services:
       NODE_ENV: production
       # App gọi broker qua mạng nội bộ Docker — KHÔNG đi ra internet
       MQTT_URL: mqtt://emqx:1883
-      MQTT_USERNAME: ${MQTT_APP_USERNAME:?Set MQTT_APP_USERNAME (.env hoặc tab Environment trên Dokploy)}
-      MQTT_PASSWORD: ${MQTT_APP_PASSWORD:?Set MQTT_APP_PASSWORD (.env hoặc tab Environment trên Dokploy)}
+      # App đăng nhập broker — PHẢI khớp user trong deploy/emqx/emqx/auth-bootstrap.csv.
+      # Default dưới đây khớp placeholder trong CSV; đổi cả 2 nơi khi lên production.
+      MQTT_USERNAME: ${MQTT_APP_USERNAME:-web-backend}
+      MQTT_PASSWORD: ${MQTT_APP_PASSWORD:-change_me_backend_password}
       MQTT_CLIENT_ID_PREFIX: ${MQTT_CLIENT_ID_PREFIX:-web-uploader}
       MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-station/player}
     ports:
-      - "${APP_PORT:-3000}:3000"
+      # KHÔNG publish port app ra host khi chạy trên Dokploy — port 3000 đã bị
+      # Dashboard Dokploy chiếm. Truy cập app qua Dokploy domain (Traefik →
+      # container qua dokploy-network, xem networks phía dưới).
+      # Chạy compose ngoài Dokploy thì uncomment dòng dưới (hoặc đổi APP_PORT):
+      # - "${APP_PORT:-3000}:3000"
     restart: unless-stopped
     deploy:
       resources:
@@ -102,16 +111,23 @@ services:
           memory: ${APP_MEM_LIMIT:-512m}
     networks:
       - mqtt-net
+      # Traefik của Dokploy chạy trên dokploy-network — app phải join mạng này
+      # thì Domain trong Dokploy UI mới route được vào container.
+      # Trong Dokploy UI → Domains: port = 3000, service = app.
+      - dokploy-network
 
 # ==============================================================================
-# NETWORK — mạng bridge riêng cho stack. Thiết bị nhúng bên ngoài kết nối MQTT
-# qua port 1883 đã publish lên host. App↔Broker nói chuyện nội bộ qua alias "emqx".
-# (Khác với compose của EMQX đơn lẻ dùng dokploy-network external — file này
-# đứng độc lập, không phụ thuộc Dokploy.)
+# NETWORK
+# - mqtt-net        : mạng nội bộ cho app ↔ emqx nói chuyện (alias "emqx")
+# - dokploy-network : mạng Traefik của Dokploy (external) — bắt buộc để gắn
+#                     domain cho app. Nếu KHÔNG dùng Dokploy: xóa network này
+#                     ở service app và khai báo dưới đây, rồi mở lại ports.
 # ==============================================================================
 networks:
   mqtt-net:
     driver: bridge
+  dokploy-network:
+    external: true
 
 volumes:
   emqx_data:
