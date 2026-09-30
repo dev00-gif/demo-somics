@@ -79,8 +79,8 @@ chạy trên browser: connect, subscribe, publish không cần cài gì.
 2. **New Connection**:
    - Host: `ws://<IP-VPS>` · Port: `8083` (WebSocket — browser không nối TCP 1883 được)
    - Username: `device-01` · Password: giá trị `MQTT_DEVICE_PASSWORD` trong `.env` (mặc định `123123`)
-3. Subscribe `station/player/#` → nhận bản tin + chunks file nhạc realtime
-4. Publish thử lên `station/player/control` → thấy ngay ở trang `/monitor` của app
+3. Subscribe `station/player/#` → nhận bản tin + URL tải file nhạc realtime
+4. Publish thử lên `station/player/control` nếu thiết bị có xử lý lệnh điều khiển
 
 > WS listener 8083 đã bật sẵn trong compose (`EMQX_LISTENERS__WS__DEFAULT__BIND`).
 > Nếu muốn qua HTTPS domain riêng cho broker: dùng `wss://` + port 443 qua Traefik (cần TLS cert).
@@ -94,13 +94,14 @@ chạy trên browser: connect, subscribe, publish không cần cài gì.
 | `MQTT_PASSWORD` | Mật khẩu (nếu có) | — |
 | `MQTT_CLIENT_ID_PREFIX` | Tiền tố client ID | `web-uploader` |
 | `MQTT_TOPIC_BASE` | Gốc của các topic | `station/player` |
+| `APP_PUBLIC_URL` | Domain public của app để tạo URL tải file | tự suy ra từ request |
 
 ## API
 
 | Method | Endpoint | Body | Mô tả |
 |---|---|---|---|
 | `POST` | `/api/announcement` | JSON `{ title, content, priority? }` | Publish bản tin text |
-| `POST` | `/api/upload` | FormData `file=<File>` | Publish file nhạc (chia chunk) |
+| `POST` | `/api/upload` | FormData `file=<File>` | Upload file và publish URL tải file |
 | `GET` | `/api/broker-status` | — | Kiểm tra kết nối broker |
 
 ## Hợp đồng MQTT cho bên nhúng (embedded)
@@ -154,6 +155,6 @@ kiểm tra `sha256` nếu cần, rồi phát/lưu file.
 ## Ghi chú kỹ thuật
 
 - **MQTT client singleton**: BE giữ 1 kết nối dài hạn tới broker, chia sẻ cho mọi API routes, tự reconnect mỗi 5s khi broker restart/mất mạng (xem `src/lib/mqtt.ts`). Cache trên `globalThis` để an toàn với hot-reload của Next.js dev.
-- QoS 1 đảm bảo message đến ít nhất 1 lần; bên nhúng nên dedupe bằng `id` + `chunk index`.
+- QoS 1 đảm bảo message đến ít nhất 1 lần; bên nhúng nên dedupe bằng `id`.
 - File lớn hơn 20MB bị từ chối ở cả FE lẫn BE.
 - Set `APP_PUBLIC_URL=https://<domain-app>` khi deploy để `downloadUrl` là URL public cho thiết bị nhúng. Nếu bỏ trống, app tự suy ra từ request upload.
