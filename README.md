@@ -26,9 +26,12 @@
 
 ```bash
 nano .env                       # điền mật khẩu thật (openssl rand -base64 24)
-nano deploy/emqx/emqx/auth-bootstrap.csv  # sửa mật khẩu user MQTT khớp .env
 docker compose up -d --build
 ```
+
+Password user MQTT nằm hoàn toàn trong `.env` (không commit): mỗi lần deploy,
+service `emqx-init` tự gọi EMQX API tạo/cập nhật user từ `MQTT_APP_PASSWORD`
+(web-backend, superuser) và `MQTT_DEVICE_PASSWORD` (device-01, device-02).
 
 > **Trên Dokploy:**
 > - Không cần file `.env` — paste biến vào tab **Environment** của service (tùy chọn, compose có default).
@@ -75,7 +78,7 @@ chạy trên browser: connect, subscribe, publish không cần cài gì.
 1. Mở `https://mqtt-client.<domain>`
 2. **New Connection**:
    - Host: `ws://<IP-VPS>` · Port: `8083` (WebSocket — browser không nối TCP 1883 được)
-   - Username: `device-01` · Password: trong `deploy/emqx/emqx/auth-bootstrap.csv`
+   - Username: `device-01` · Password: giá trị `MQTT_DEVICE_PASSWORD` trong `.env` (mặc định `123123`)
 3. Subscribe `station/player/#` → nhận bản tin + chunks file nhạc realtime
 4. Publish thử lên `station/player/control` → thấy ngay ở trang `/monitor` của app
 

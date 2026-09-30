@@ -31,13 +31,12 @@ services:
       # KHÔNG đặt = fallback admin/public, EMQX buộc đổi mật khẩu ở lần login đầu.
       # Dashboard bind 127.0.0.1 nên rủi ro thấp, nhưng production nên đặt env này.
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${DASHBOARD_PASSWORD:-}
-      # Tắt anonymous: khai báo authenticator built-in database + bootstrap user
+      # Tắt anonymous: khai báo authenticator built-in database.
+      # User MQTT tạo/cập nhật bởi service emqx-init (password từ env — xem dưới).
       EMQX_AUTHENTICATION__1__MECHANISM: password_based
       EMQX_AUTHENTICATION__1__BACKEND: built_in_database
       EMQX_AUTHENTICATION__1__USER_ID_TYPE: username
       EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: '{"name":"sha256","salt_position":"suffix"}'
-      EMQX_AUTHENTICATION__1__BOOTSTRAP_FILE: /opt/emqx/etc/auth-bootstrap.csv
-      EMQX_AUTHENTICATION__1__BOOTSTRAP_TYPE: plain
       EMQX_LOG__CONSOLE_HANDLER__ENABLE: "true"
       EMQX_LOG__CONSOLE_HANDLER__LEVEL: ${EMQX_LOG_LEVEL:-warning}
 
@@ -65,7 +64,6 @@ services:
     volumes:
       - emqx_data:/opt/emqx/data
       - emqx_log:/opt/emqx/log
-      - ./deploy/emqx/emqx/auth-bootstrap.csv:/opt/emqx/etc/auth-bootstrap.csv:ro
       # Chứng chỉ TLS — uncomment cùng khối SSL phía trên khi đã tạo cert:
       # - ./deploy/emqx/certs/ca.crt:/opt/emqx/etc/certs/ca.crt:ro
       # - ./deploy/emqx/certs/server.crt:/opt/emqx/etc/certs/server.crt:ro
@@ -99,8 +97,8 @@ services:
       NODE_ENV: production
       # App gọi broker qua mạng nội bộ Docker — KHÔNG đi ra internet
       MQTT_URL: mqtt://emqx:1883
-      # App đăng nhập broker — PHẢI khớp user trong deploy/emqx/emqx/auth-bootstrap.csv.
-      # Default dưới đây khớp placeholder trong CSV; đổi cả 2 nơi khi lên production.
+      # App đăng nhập broker — password được đồng bộ qua service emqx-init
+      # (nó PUT user web-backend vào broker từ biến MQTT_APP_PASSWORD).
       MQTT_USERNAME: ${MQTT_APP_USERNAME:-web-backend}
       MQTT_PASSWORD: ${MQTT_APP_PASSWORD:-change_me_backend_password}
       MQTT_CLIENT_ID_PREFIX: ${MQTT_CLIENT_ID_PREFIX:-web-uploader}
@@ -121,6 +119,30 @@ services:
       # thì Domain trong Dokploy UI mới route được vào container.
       # Trong Dokploy UI → Domains: port = 3000, service = app.
       - dokploy-network
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # emqx-init — tạo/cập nhật user MQTT từ biến môi trường (mỗi lần deploy).
+  # Password nằm trong .env / tab Environment — KHÔNG nằm trong file repo.
+  # Chạy xong tự thoát (container ngắn hạn, không tốn tài nguyên).
+  # ──────────────────────────────────────────────────────────────────────────────
+  emqx-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      emqx:
+        condition: service_healthy
+    environment:
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-admin}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      MQTT_APP_USERNAME: ${MQTT_APP_USERNAME:-web-backend}
+      MQTT_APP_PASSWORD: ${MQTT_APP_PASSWORD:-change_me_backend_password}
+      MQTT_DEVICE_PASSWORD: ${MQTT_DEVICE_PASSWORD:-123123}
+      MQTT_DEVICE_USERS: ${MQTT_DEVICE_USERS:-device-01 device-02}
+    volumes:
+      - ./deploy/emqx/scripts/init-users.sh:/init-users.sh:ro
+    entrypoint: ["sh", "/init-users.sh"]
+    restart: "no"
+    networks:
+      - mqtt-net
 
   # ──────────────────────────────────────────────────────────────────────────────
   # MQTTX Web — giao diện MQTT client chạy trên browser (của EMQX, mã nguồn mở).

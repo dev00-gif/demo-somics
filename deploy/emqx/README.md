@@ -1,6 +1,10 @@
 # Deploy EMQX MQTT Broker lên VPS Ubuntu bằng Dokploy
 
-> File liên quan: `docker-compose.yml` · `.env.example` · `emqx/auth-bootstrap.csv` (cùng thư mục)
+> File liên quan: `docker-compose.yml` · `.env.example` · `scripts/init-users.sh` (cùng thư mục)
+>
+> **User MQTT**: được tạo/cập nhật qua EMQX API bởi script `init-users.sh` chạy trong
+> service `emqx-init` (compose root) — password lấy từ biến môi trường
+> `MQTT_APP_PASSWORD` / `MQTT_DEVICE_PASSWORD`, không lưu trong repo.
 
 ## 1. Giải thích docker-compose.yml
 
@@ -11,7 +15,7 @@
 | `EMQX_NODE__COOKIE` | chuỗi ngẫu nhiên | Cookie Erlang, bắt buộc khi sau này mở rộng cluster. Phải đổi khỏi giá trị mặc định. |
 | `EMQX_DASHBOARD__DEFAULT_USERNAME/PASSWORD` | `admin` / bắt buộc đặt | Tài khoản đăng nhập Dashboard `:18083`. Nếu không đặt, EMQX dùng `admin/public` — cực kỳ nguy hiểm. |
 | `EMQX_AUTHENTICATION__1__*` | `password_based` + `built_in_database` | Khai báo authenticator ngay khi boot. **Trong EMQX 5/6, chỉ cần có ≥1 authenticator là mọi kết nối không mang username/password bị từ chối** → đây chính là cách tắt anonymous access (không còn biến `EMQX_ALLOW_ANONYMOUS` như v4). |
-| `EMQX_AUTHENTICATION__1__BOOTSTRAP_FILE` | `/opt/emqx/etc/auth-bootstrap.csv` | Lần đầu authenticator được tạo, EMQX nạp user từ CSV mount vào container (`bootstrap_type = plain` → password dạng plain, EMQX tự hash SHA-256 + salt trước khi lưu). Bootstrap chỉ chạy 1 lần, không ghi đè user đã có. |
+| `EMQX_AUTHENTICATION__1__*` | `password_based` + `built_in_database` | Khai báo authenticator khi boot — mọi kết nối không có username/password bị từ chối (tắt anonymous). User được service `emqx-init` nạp qua API sau khi broker lên. |
 | `ports: 1883` | `${MQTT_TCP_BIND:-0.0.0.0}:1883:1883` | MQTT TCP cho FE/BE và thiết bị nhúng. Bind ra mọi IP nhưng nên giới hạn bằng firewall. |
 | `ports: 18083` | `${DASHBOARD_BIND:-127.0.0.1}:18083:18083` | Dashboard. **Mặc định chỉ bind localhost** → không lộ public; truy cập qua SSH tunnel hoặc gắn domain HTTPS qua Dokploy (mục 7). |
 | `volumes` | `emqx_data`, `emqx_log` | Named volume do Docker quản lý: user MQTT, cấu hình, retained messages, log, crash dump sống sót qua restart/redeploy. |
@@ -36,16 +40,15 @@ MQTT_TCP_BIND=0.0.0.0     # 127.0.0.1 nếu chỉ BE nội bộ kết nối
 DASHBOARD_BIND=127.0.0.1  # giữ nguyên trừ khi dùng domain qua Dokploy
 ```
 
-Sửa `emqx/auth-bootstrap.csv` trước khi deploy đầu tiên:
+Đặt password user MQTT trong env (tab Environment Dokploy hoặc `.env`):
 
-```csv
-user_id,password,is_superuser
-web-backend,<mật khẩu cho BE Next.js>,true
-device-01,<mật khẩu cho thiết bị nhúng 1>,false
-device-02,<mật khẩu cho thiết bị nhúng 2>,false
+```bash
+MQTT_APP_PASSWORD=<mật khẩu web-backend — superuser>
+MQTT_DEVICE_PASSWORD=<mật khẩu chung cho device-01, device-02>
 ```
 
-> `is_superuser=true` cho BE để được pub/sub mọi topic. Thiết bị để `false` rồi giới hạn bằng ACL (Dashboard → Access Control → Authorization) nếu muốn.
+> `web-backend` là superuser (pub/sub mọi topic). Thiết bị để thường + giới hạn bằng ACL (Dashboard → Access Control → Authorization) nếu muốn.
+> Mỗi lần deploy, `emqx-init` chạy `scripts/init-users.sh` → PUT user qua API → password luôn đồng bộ env, đổi mật khẩu = sửa env + redeploy.
 
 ## 3. Các bước deploy trên Dokploy
 
@@ -55,7 +58,7 @@ device-02,<mật khẩu cho thiết bị nhúng 2>,false
    - **Source Type**: chọn Git (repo chứa file compose) hoặc dán trực tiếp nội dung `docker-compose.yml` vào ô compose.
    - Nếu dùng Git: trỏ tới branch + đường dẫn compose file (`deploy/emqx/docker-compose.yml`).
 4. Tab **Environment**: dán các biến ở mục 2 (Dokploy inject vào compose khi deploy).
-   - **Lưu ý file bootstrap CSV**: compose mount `./emqx/auth-bootstrap.csv` vào `/opt/emqx/etc/`. Khi dùng Git source, Dokploy clone repo về nên đường dẫn tương đối hoạt động. Nếu dán compose trực tiếp, hãy **thêm nội dung CSV dạng config/file trong tab Advanced → Files** (path `/opt/emqx/etc/auth-bootstrap.csv`) thay vì mount.
+   - **Lưu ý user MQTT**: compose này dùng bootstrap CSV cũ — đã chuyển sang cơ chế `emqx-init` ở compose root. Nếu dùng file này standalone, tự chạy `scripts/init-users.sh` (thay hostname `emqx` bằng tên service) sau khi broker lên.
 5. Bấm **Deploy**. Xem log ở tab **Deployments** — chờ tới dòng `EMQX ... is running now!`.
 6. Kiểm tra container: SSH vào VPS → `docker ps | grep emqx` (status `Up (healthy)`).
 7. Mở port 1883 nếu cần kết nối từ bên ngoài:
@@ -247,7 +250,7 @@ Với self-signed CA, thêm vào `src/lib/mqtt.ts` options: `ca: fs.readFileSync
 |---|---|
 | `Not authorised` khi client kết nối | Sai username/password, hoặc user chưa tồn tại. Check Dashboard → Authentication → Users. |
 | Mất user sau khi tạo lại container | `EMQX_NODE_NAME`/`hostname` bị đổi → data mnesia thành thư mục khác. Giữ nguyên 2 biến này. |
-| Volume không mount (compose dán trực tiếp) | Đường dẫn `./emqx/auth-bootstrap.csv` không tồn tại trên host → dùng tab Advanced → Files của Dokploy (mục 3, bước 4). |
+| User MQTT không tồn tại sau deploy | Service `emqx-init` fail — xem log nó trong Dokploy; thường do `DASHBOARD_PASSWORD` env chưa khớp password admin broker. |
 | Container `unhealthy` liên tục | Xem `docker logs emqx`. Thường do RAM thiếu (tăng `EMQX_MEM_LIMIT`) hoặc cookie/node name xung đột. |
 | Quên mật khẩu Dashboard | `docker exec -it emqx emqx ctl admins reset-password <user>` (hoặc xóa volume + deploy lại, mất toàn bộ user MQTT). |
 | Port 1883 không nối từ ngoài | `sudo ufw status` — chưa mở port, hoặc `MQTT_TCP_BIND=127.0.0.1`. |

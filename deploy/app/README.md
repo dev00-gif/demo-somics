@@ -33,7 +33,7 @@ Build-time chỉ dùng biến placeholder cho `MQTT_*` (Next.js inlines env lúc
    ```bash
    MQTT_URL=mqtt://emqx:1883
    MQTT_USERNAME=web-backend
-   MQTT_PASSWORD=<mật khẩu web-backend trong auth-bootstrap.csv>
+   MQTT_PASSWORD=<giá trị MQTT_APP_PASSWORD — đồng bộ qua service emqx-init>
    MQTT_TOPIC_BASE=station/player
    MQTT_CLIENT_ID_PREFIX=web-uploader
    NODE_ENV=production

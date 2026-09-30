@@ -43,9 +43,8 @@ services:
       EMQX_AUTHENTICATION__1__USER_ID_TYPE: username
       EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: '{"name":"sha256","salt_position":"suffix"}'
 
-      # Nạp user MQTT từ file CSV lần đầu authenticator được tạo (xem ./emqx/auth-bootstrap.csv)
-      EMQX_AUTHENTICATION__1__BOOTSTRAP_FILE: ${EMQX_ETC_DIR:-/opt/emqx/etc}/auth-bootstrap.csv
-      EMQX_AUTHENTICATION__1__BOOTSTRAP_TYPE: plain
+      # User MQTT được tạo/cập nhật qua API bởi script deploy/emqx/scripts/init-users.sh
+      # (password từ biến môi trường — xem compose root docker-compose.yml service emqx-init)
 
       # Ẩn version ra endpoint /status công khai (hardening, mặc định đã vậy từ 5.10.4)
       EMQX_LOG__CONSOLE_HANDLER__ENABLE: "true"
@@ -80,10 +79,6 @@ services:
     volumes:
       - emqx_data:/opt/emqx/data   # DB user, session config, retained messages…
       - emqx_log:/opt/emqx/log     # file log + crash dump
-      # User MQTT khởi tạo (chỉ đọc). Lưu ý: khi dán compose trực tiếp vào Dokploy
-      # (không dùng Git source), đường dẫn tương đối không tồn tại → thay bằng
-      # tab Advanced → Files của Dokploy (xem README mục 3, bước 4).
-      - ./emqx/auth-bootstrap.csv:/opt/emqx/etc/auth-bootstrap.csv:ro
       # Chứng chỉ TLS — uncomment cùng khối SSL phía trên khi đã tạo cert:
       # - ./certs/ca.crt:/opt/emqx/etc/certs/ca.crt:ro
       # - ./certs/server.crt:/opt/emqx/etc/certs/server.crt:ro

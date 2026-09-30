@@ -1,4 +1,0 @@
-user_id,password,is_superuser
-web-backend,CHANGE_ME_backend_password,true
-device-01,123123,false
-device-02,123123,false
