@@ -2,8 +2,9 @@
 
 Ứng dụng **Next.js** (App Router + TypeScript + Tailwind) gồm:
 
-- **FE**: giao diện web có nút upload file nhạc + form gửi bản tin text.
+- **FE**: giao diện web có nút upload file nhạc + form gửi bản tin text + trang `/monitor` xem message live.
 - **BE**: API routes nhận request từ FE, xử lý rồi **publish lên MQTT broker**.
+- **MQTTX Web**: web client MQTT (connect/subscribe/publish trên browser) cho bên nhúng/QA.
 - **Thiết bị nhúng**: subscribe các topic MQTT, nhận bản tin/file, ghép chunk và phát.
 
 ```
@@ -54,6 +55,32 @@ Production nên đổi sang broker riêng (EMQX, HiveMQ, Mosquitto...).
 
 Xem `deploy/app/README.md` (app) và `deploy/emqx/README.md` (broker) — khuyến nghị
 deploy 2 service riêng để redeploy app không restart broker.
+
+## MQTTX Web — giao diện MQTT client cho bên nhúng/QA
+
+Compose đã kèm **MQTTX Web** (`emqx/mqttx-web`) — web client MQTT chính thức của EMQX,
+chạy trên browser: connect, subscribe, publish không cần cài gì.
+
+**Setup 1 lần trên Dokploy:**
+
+1. Deploy lại compose (có service mới `mqttx-web`).
+2. Service → **Domains** → **Add Domain** thứ 2:
+   - Domain: `mqtt-client.<domain>` (DNS A record → VPS)
+   - Service Name: chọn `mqttx-web`
+   - Container Port: `80` (MQTTX Web là static web, chạy port 80 trong container)
+   - HTTPS: bật
+
+**Bên nhúng dùng:**
+
+1. Mở `https://mqtt-client.<domain>`
+2. **New Connection**:
+   - Host: `ws://<IP-VPS>` · Port: `8083` (WebSocket — browser không nối TCP 1883 được)
+   - Username: `device-01` · Password: trong `deploy/emqx/emqx/auth-bootstrap.csv`
+3. Subscribe `station/player/#` → nhận bản tin + chunks file nhạc realtime
+4. Publish thử lên `station/player/control` → thấy ngay ở trang `/monitor` của app
+
+> WS listener 8083 đã bật sẵn trong compose (`EMQX_LISTENERS__WS__DEFAULT__BIND`).
+> Nếu muốn qua HTTPS domain riêng cho broker: dùng `wss://` + port 443 qua Traefik (cần TLS cert).
 
 ## Biến môi trường (`.env.local`)
 
