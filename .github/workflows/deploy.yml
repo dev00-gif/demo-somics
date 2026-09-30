@@ -1,28 +1,38 @@
-name: Deploy App — MQTT Station (Dokploy)
+name: Deploy MQTT Station — Full Stack (Dokploy)
 
-# Trigger khi push code ứng dụng lên main (EMQX có workflow riêng: deploy-emqx.yml)
+# Gộp 1 workflow duy nhất: deploy bằng 1 service Docker Compose trên Dokploy
+# (EMQX + app trong cùng docker-compose.yml ở root) → chỉ cần gọi compose.deploy.
+#
+# Trigger: mọi push lên main (cả code app lẫn cấu hình broker cùng đi vào 1 lần
+# deploy). Nếu muốn chỉ deploy khi có thay đổi thật sự, uncomment `paths:` bên dưới.
 on:
   push:
     branches: [main]
-    paths:
-      - "src/**"
-      - "public/**"
-      - "Dockerfile"
-      - ".dockerignore"
-      - "next.config.ts"
-      - "package.json"
-      - "package-lock.json"
-      - ".github/workflows/deploy-app.yml"
+    # paths:
+    #   - "src/**"
+    #   - "public/**"
+    #   - "Dockerfile"
+    #   - ".dockerignore"
+    #   - "next.config.ts"
+    #   - "package.json"
+    #   - "package-lock.json"
+    #   - "docker-compose.yml"
+    #   - "deploy/**"
+    #   - ".github/workflows/deploy.yml"
   workflow_dispatch: {}
 
-# Chạy tuần tự các lần deploy — tránh 2 request deploy chồng nhau khi push liên tiếp
 concurrency:
-  group: deploy-app
+  group: deploy-fullstack
   cancel-in-progress: false
+
+env:
+  DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
+  DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+  DOKPLOY_COMPOSE_ID: ${{ secrets.DOKPLOY_COMPOSE_ID }}
 
 jobs:
   deploy:
-    name: Trigger Dokploy redeploy
+    name: Trigger Dokploy compose redeploy
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -31,85 +41,75 @@ jobs:
         uses: actions/checkout@v4
 
       # ---------------------------------------------------------------------------
-      # 1. Kiểm tra secrets đã cấu hình chưa — fail sớm với thông báo rõ ràng
-      #    thay vì lỗi 401 khó hiểu từ API.
+      # 1. Kiểm tra secrets — fail sớm với hướng dẫn rõ ràng.
+      #    GitHub Actions không cho index động secrets[s] → map qua env + ${!s}.
       # ---------------------------------------------------------------------------
       - name: Validate secrets
-        # GitHub Actions không cho index động secrets[s] → map qua env rồi
-        # dùng indirect expansion ${!s} của bash để kiểm tra từng secret.
-        env:
-          DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
-          DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
-          DOKPLOY_APP_ID: ${{ secrets.DOKPLOY_APP_ID }}
         run: |
           missing=0
-          for s in DOKPLOY_URL DOKPLOY_API_KEY DOKPLOY_APP_ID; do
+          for s in DOKPLOY_URL DOKPLOY_API_KEY DOKPLOY_COMPOSE_ID; do
             if [ -z "${!s}" ]; then
               echo "::error::Secret '$s' chưa được cấu hình."
-              echo "        Vào GitHub → Settings → Secrets and variables → Actions → New repository secret"
+              echo "        GitHub → Settings → Secrets and variables → Actions → New repository secret"
               missing=1
             fi
           done
           exit $missing
 
       # ---------------------------------------------------------------------------
-      # 2. Trigger deploy qua Dokploy API
-      #    POST /api/application.deploy với body {"applicationId": "..."}
-      #    (khác với compose service dùng /api/compose.deploy + composeId)
+      # 2. Trigger deploy: POST /api/compose.deploy
+      #    (service Docker Compose trên Dokploy — KHÔNG phải application.deploy)
       # ---------------------------------------------------------------------------
-      - name: Gọi Dokploy API — application.deploy
-        id: deploy
+      - name: Gọi Dokploy API — compose.deploy
         run: |
           set -euo pipefail
 
           HTTP_CODE=$(curl -sS -o /tmp/dokploy_response.json -w "%{http_code}" \
             --max-time 30 \
             -X POST \
-            "${{ secrets.DOKPLOY_URL }}/api/application.deploy" \
-            -H "x-api-key: ${{ secrets.DOKPLOY_API_KEY }}" \
+            "$DOKPLOY_URL/api/compose.deploy" \
+            -H "x-api-key: $DOKPLOY_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"applicationId\": \"${{ secrets.DOKPLOY_APP_ID }}\"}")
+            -d "{\"composeId\": \"$DOKPLOY_COMPOSE_ID\"}")
 
           echo "HTTP $HTTP_CODE"
           echo "Response: $(cat /tmp/dokploy_response.json)"
 
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::Dokploy từ chối yêu cầu deploy (HTTP $HTTP_CODE)."
-            echo "Gợi ý: kiểm tra DOKPLOY_URL (không có / cuối), DOKPLOY_API_KEY còn hạn,"
-            echo "và DOKPLOY_APP_ID đúng là id của Application (không phải composeId)."
+            echo "::error::Dokploy từ chối deploy (HTTP $HTTP_CODE)."
+            echo "Gợi ý: DOKPLOY_URL không có / cuối · API key còn hạn ·"
+            echo "DOKPLOY_COMPOSE_ID đúng là ID của service Docker Compose (không phải applicationId)."
             exit 1
           fi
 
       # ---------------------------------------------------------------------------
-      # 3. Poll trạng thái deployment trên Dokploy (best-effort)
-      #    API là async — trigger thành công ≠ deploy xong. Thử đọc trạng thái
-      #    qua /api/application.readStatus; nếu endpoint không có/không phản hồi
-      #    thì vẫn pass (không chặn pipeline) vì đã có health check bên dưới.
+      # 3. Poll trạng thái (best-effort) — API là async, trigger OK ≠ deploy xong.
+      #    Lưu ý: restart compose sẽ restart cả EMQX → thiết bị nhúng reconnect
+      #    sau ~5-30s. Nên deploy trong khung giờ ít người dùng.
       # ---------------------------------------------------------------------------
       - name: Chờ deployment hoàn tất (best-effort polling)
         run: |
           set -uo pipefail
 
-          MAX_ATTEMPTS=30        # 30 lần x 20s = tối đa 10 phút
+          MAX_ATTEMPTS=30   # 30 x 20s = tối đa 10 phút
           INTERVAL=20
 
           for i in $(seq 1 $MAX_ATTEMPTS); do
             STATUS=$(curl -sS --max-time 15 \
-              "${{ secrets.DOKPLOY_URL }}/api/application.readStatus" \
-              -H "x-api-key: ${{ secrets.DOKPLOY_API_KEY }}" \
+              "$DOKPLOY_URL/api/compose.readStatus" \
+              -H "x-api-key: $DOKPLOY_API_KEY" \
               -H "Content-Type: application/json" \
-              -d "{\"applicationId\": \"${{ secrets.DOKPLOY_APP_ID }}\"}" \
+              -d "{\"composeId\": \"$DOKPLOY_COMPOSE_ID\"}" \
               2>/dev/null || echo "")
 
             echo "[attempt $i/$MAX_ATTEMPTS] status: ${STATUS:-<không đọc được>}"
 
-            # API trả chuỗi trạng thái; coi "error" là thất bại, "done" là xong.
             case "$STATUS" in
               *error*)
                 echo "::error::Deployment trên Dokploy báo lỗi — xem log trong Dokploy UI."
                 exit 1
                 ;;
-              *done*)
+              *done*|*idle*)
                 echo "Deployment hoàn tất sau $((i * INTERVAL))s."
                 exit 0
                 ;;
@@ -118,14 +118,13 @@ jobs:
             sleep $INTERVAL
           done
 
-          echo "::warning::Hết thời gian chờ polling ($((MAX_ATTEMPTS * INTERVAL))s) mà chưa đọc được trạng thái."
-          echo "Deploy có thể vẫn đang chạy trên VPS — kiểm tra Dokploy UI → Deployments."
-          # Không fail job ở đây: build lâu là bình thường, health check phía sau sẽ quyết định.
+          echo "::warning::Hết 10 phút polling chưa đọc được trạng thái 'done'."
+          echo "Deploy có thể vẫn đang chạy — kiểm tra Dokploy UI → Deployments."
+          # Không fail: health check bên dưới mới là kết quả cuối.
 
       # ---------------------------------------------------------------------------
-      # 4. Health check domain công khai (nếu đã gắn domain HTTPS trên Dokploy).
-      #    Đặt secret HEALTH_CHECK_URL (vd https://mqtt-station.yourdomain.com/api/health).
-      #    Nếu chưa đặt secret → bước này tự bỏ qua, không fail.
+      # 4. Health check app qua domain public (tùy chọn — đặt secret HEALTH_CHECK_URL,
+      #    vd https://mqtt-station.yourdomain.com/api/health; không đặt thì skip).
       # ---------------------------------------------------------------------------
       - name: Health check app sau deploy
         if: ${{ secrets.HEALTH_CHECK_URL != '' }}
@@ -133,7 +132,9 @@ jobs:
           set -euo pipefail
           URL="${{ secrets.HEALTH_CHECK_URL }}"
 
-          echo "Polling $URL ..."
+          # Compose restart làm app khởi động lại — chờ thêm chút trước khi poll
+          sleep 30
+
           for i in $(seq 1 15); do
             HTTP_CODE=$(curl -sS -o /tmp/health.json -w "%{http_code}" --max-time 10 "$URL" || echo "000")
             BODY=$(cat /tmp/health.json 2>/dev/null || echo "")
@@ -147,7 +148,7 @@ jobs:
           done
 
           echo "::error::App chưa healthy sau deploy ($URL)."
-          echo "Kiểm tra: log build trong Dokploy, biến môi trường MQTT_*, và container có chạy không."
+          echo "Kiểm tra: log build trong Dokploy · biến Environment · container emqx/app có chạy không."
           exit 1
 
       # ---------------------------------------------------------------------------
@@ -157,7 +158,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### 🚀 Deploy MQTT Station"
+            echo "### 🚀 Deploy MQTT Station (full stack)"
             echo ""
             echo "| Mục | Giá trị |"
             echo "|---|---|"
@@ -166,5 +167,7 @@ jobs:
             echo "| Trigger | ${{ github.event_name }} |"
             echo "| Kết quả | ${{ job.status }} |"
             echo ""
-            echo "_Log chi tiết quá trình build chạy trên VPS: Dokploy UI → mqtt-station → Deployments._"
+            echo "_Lưu ý: deploy này restart cả EMQX — thiết bị nhúng sẽ tự reconnect trong ~30s._"
+            echo ""
+            echo "_Log chi tiết: Dokploy UI → service compose → Deployments._"
           } >> "$GITHUB_STEP_SUMMARY"

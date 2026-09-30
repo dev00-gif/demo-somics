@@ -257,7 +257,7 @@ Với self-signed CA, thêm vào `src/lib/mqtt.ts` options: `ca: fs.readFileSync
 
 ## 10. GitHub Actions — deploy tự động
 
-Workflow ở `.github/workflows/deploy-emqx.yml` (root repo) sẽ gọi Dokploy API trigger redeploy service compose mỗi khi có push thay đổi trong `deploy/emqx/**`.
+Workflow duy nhất `.github/workflows/deploy.yml` (root repo) trigger khi push lên `main`: gọi `POST /api/compose.deploy` redeploy service Docker Compose gộp (EMQX + app), poll trạng thái rồi health check app.
 
 Cần set **Repository Secrets** (GitHub → Settings → Secrets and variables → Actions):
 
@@ -265,4 +265,7 @@ Cần set **Repository Secrets** (GitHub → Settings → Secrets and variables 
 |---|---|
 | `DOKPLOY_URL` | `https://<domain-dokploy-của-bạn>` (không có `/` cuối) |
 | `DOKPLOY_API_KEY` | API key tạo ở Dokploy: avatar → **Profile → API Keys** → Create |
-| `DOKPLOY_COMPOSE_ID` | ID của service compose (lấy khi bấm vào service emqx-broker, hoặc gọi `GET /api/project.all` như docs Dokploy) |
+| `DOKPLOY_COMPOSE_ID` | ID của service Docker Compose (xem trong URL khi mở service) |
+| `HEALTH_CHECK_URL` | (tùy chọn) `https://<domain-app>/api/health` để health check sau deploy |
+
+> Nếu sau này tách EMQX và app thành 2 service riêng (để redeploy app không restart broker), quay lại dùng 2 workflow riêng gọi `compose.deploy` (EMQX) và `application.deploy` (app).

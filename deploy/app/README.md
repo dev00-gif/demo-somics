@@ -62,7 +62,7 @@ Build-time chỉ dùng biến placeholder cho `MQTT_*` (Next.js inlines env lúc
 - Push code mới lên `main` → Dokploy auto-deploy (nếu bật Auto Deploy) hoặc bấm **Deploy** tay.
 - Docker build cache: layer `deps` chỉ chạy lại khi `package*.json` đổi → build lại nhanh.
 - Rollback: tab **Deployments** → chọn bản cũ → **Redeploy**.
-- Tự động: workflow `.github/workflows/deploy-app.yml` trigger mỗi khi push `src/**`, `Dockerfile`, `package*.json`... lên `main`.
+- Tự động: workflow `.github/workflows/deploy.yml` trigger mỗi khi push lên `main` (mục 4 bên dưới).
 
 ## 4. Kết hợp với docker-compose của EMQX
 
@@ -74,11 +74,11 @@ Project "mqtt-system"
 └── mqtt-station  (Application — Dockerfile root)
 ```
 
-Lý do tách: EMQX ít thay đổi (redeploy hiếm, giữ state), app thay đổi thường xuyên (CI/CD mỗi commit). GitHub Actions workflow `deploy-emqx.yml` chỉ trigger khi `deploy/emqx/**` đổi. Workflow cho app đã có sẵn: `.github/workflows/deploy-app.yml` — pipeline gồm 5 bước:
+Lý do tách: EMQX ít thay đổi (redeploy hiếm, giữ state), app thay đổi thường xuyên (CI/CD mỗi commit). GitHub Actions: workflow duy nhất `.github/workflows/deploy.yml` — pipeline gồm 5 bước:
 
-1. **Validate secrets** — fail sớm với hướng dẫn nếu thiếu `DOKPLOY_URL` / `DOKPLOY_API_KEY` / `DOKPLOY_APP_ID`
-2. **Trigger deploy** — `POST /api/application.deploy`
-3. **Poll trạng thái** — hỏi `/api/application.readStatus` tối đa 10 phút (best-effort)
+1. **Validate secrets** — fail sớm với hướng dẫn nếu thiếu `DOKPLOY_URL` / `DOKPLOY_API_KEY` / `DOKPLOY_COMPOSE_ID`
+2. **Trigger deploy** — `POST /api/compose.deploy` (service Docker Compose gộp)
+3. **Poll trạng thái** — hỏi `/api/compose.readStatus` tối đa 10 phút (best-effort)
 4. **Health check** — poll `/api/health` trên domain public (tùy chọn qua secret `HEALTH_CHECK_URL`)
 5. **Summary** — bảng kết quả trong tab Summary của run
 
@@ -88,14 +88,14 @@ Lý do tách: EMQX ít thay đổi (redeploy hiếm, giữ state), app thay đ�
 |---|---|---|
 | `DOKPLOY_URL` | `https://<domain-dokploy>` (không có `/` cuối) | ✅ |
 | `DOKPLOY_API_KEY` | API key từ Dokploy: avatar → Profile → API Keys | ✅ |
-| `DOKPLOY_APP_ID` | ID của Application service (xem trong URL khi mở service) | ✅ |
+| `DOKPLOY_COMPOSE_ID` | ID của service Docker Compose (xem trong URL khi mở service) | ✅ |
 | `HEALTH_CHECK_URL` | `https://mqtt-station.yourdomain.com/api/health` | tùy chọn |
 
-Lấy `DOKPLOY_APP_ID` nhanh bằng:
+Lấy `DOKPLOY_COMPOSE_ID` nhanh bằng:
 
 ```bash
 curl -s "https://<domain-dokploy>/api/project.all" -H "x-api-key: <key>" \
-  | jq '.[].applications[] | {name, applicationId}'
+  | jq '.. | objects | select(has("composeId")) | {name, composeId}'
 ```
 
 ## 5. Troubleshooting
