@@ -15,7 +15,8 @@ services:
     # Nâng cấp: sửa số version rồi redeploy (volume giữ nguyên dữ liệu).
     image: emqx/emqx:${EMQX_VERSION:-6.1.5}
 
-    container_name: ${EMQX_CONTAINER_NAME:-emqx}
+    # KHÔNG đặt container_name: Dokploy quản lý tên container theo project —
+    # đặt cứng sẽ conflict khi deploy lại. Xem tên thật: docker ps | grep emqx
 
     # ----- Hostname/node name -------------------------------------------------
     # EMQX lưu data theo node name (data/mnesia/<node_name>). Ghim hostname +

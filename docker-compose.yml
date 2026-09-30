@@ -18,7 +18,9 @@ services:
   # ──────────────────────────────────────────────────────────────────────────────
   emqx:
     image: emqx/emqx:${EMQX_VERSION:-6.1.5}
-    container_name: emqx
+    # KHÔNG đặt container_name: Dokploy quản lý tên container theo project
+    # (vd <project>-emqx-1) — đặt cứng sẽ conflict khi deploy lại.
+    # Xem tên thật: docker ps | grep emqx
     hostname: ${EMQX_NODE_HOST:-node1.emqx.local}
     environment:
       EMQX_NODE_NAME: emqx@${EMQX_NODE_HOST:-node1.emqx.local}
@@ -84,7 +86,6 @@ services:
       context: .
       dockerfile: Dockerfile
     image: mqtt-station:latest
-    container_name: mqtt-station
     depends_on:
       emqx:
         condition: service_healthy   # chờ broker healthy mới start app
