@@ -99,12 +99,11 @@ services:
       MQTT_PASSWORD: ${MQTT_APP_PASSWORD:-change_me_backend_password}
       MQTT_CLIENT_ID_PREFIX: ${MQTT_CLIENT_ID_PREFIX:-web-uploader}
       MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-station/player}
-    ports:
-      # KHÔNG publish port app ra host khi chạy trên Dokploy — port 3000 đã bị
-      # Dashboard Dokploy chiếm. Truy cập app qua Dokploy domain (Traefik →
-      # container qua dokploy-network, xem networks phía dưới).
-      # Chạy compose ngoài Dokploy thì uncomment dòng dưới (hoặc đổi APP_PORT):
-      # - "${APP_PORT:-3000}:3000"
+    # KHÔNG publish port app ra host khi chạy trên Dokploy — port 3000 đã bị
+    # Dashboard Dokploy chiếm. Truy cập app qua Dokploy → Domains (Traefik →
+    # container qua dokploy-network). Chạy compose ngoài Dokploy thì thêm lại:
+    #   ports:
+    #     - "${APP_PORT:-3000}:3000"
     restart: unless-stopped
     deploy:
       resources:
