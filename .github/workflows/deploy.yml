@@ -29,6 +29,7 @@ env:
   DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
   DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
   DOKPLOY_COMPOSE_ID: ${{ secrets.DOKPLOY_COMPOSE_ID }}
+  HEALTH_CHECK_URL: ${{ secrets.HEALTH_CHECK_URL }}
 
 jobs:
   deploy:
@@ -127,10 +128,10 @@ jobs:
       #    vd https://mqtt-station.yourdomain.com/api/health; không đặt thì skip).
       # ---------------------------------------------------------------------------
       - name: Health check app sau deploy
-        if: ${{ secrets.HEALTH_CHECK_URL != '' }}
+        if: ${{ env.HEALTH_CHECK_URL != '' }}
         run: |
           set -euo pipefail
-          URL="${{ secrets.HEALTH_CHECK_URL }}"
+          URL="$HEALTH_CHECK_URL"
 
           # Compose restart làm app khởi động lại — chờ thêm chút trước khi poll
           sleep 30
