@@ -35,7 +35,7 @@ jobs:
   deploy:
     name: Trigger Dokploy compose redeploy
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
 
     steps:
       - name: Checkout (lấy SHA để ghi summary)
@@ -65,13 +65,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          DEPLOYMENT_TITLE="GitHub ${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "DEPLOYMENT_TITLE=$DEPLOYMENT_TITLE" >> "$GITHUB_ENV"
+          PAYLOAD=$(jq -nc --arg id "$DOKPLOY_COMPOSE_ID" --arg title "$DEPLOYMENT_TITLE" \
+            '{composeId: $id, title: $title}')
+
           HTTP_CODE=$(curl -sS -o /tmp/dokploy_response.json -w "%{http_code}" \
             --max-time 30 \
             -X POST \
-            "$DOKPLOY_URL/api/compose.deploy" \
+            "${DOKPLOY_URL%/}/api/compose.deploy" \
             -H "x-api-key: $DOKPLOY_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"composeId\": \"$DOKPLOY_COMPOSE_ID\"}")
+            -d "$PAYLOAD")
 
           echo "HTTP $HTTP_CODE"
           echo "Response: $(cat /tmp/dokploy_response.json)"
@@ -83,45 +88,56 @@ jobs:
             exit 1
           fi
 
+
       # ---------------------------------------------------------------------------
-      # 3. Poll trạng thái (best-effort) — API là async, trigger OK ≠ deploy xong.
-      #    Lưu ý: restart compose sẽ restart cả EMQX → thiết bị nhúng reconnect
-      #    sau ~5-30s. Nên deploy trong khung giờ ít người dùng.
+      # 3. Read the deployment history and match this run's unique title.
       # ---------------------------------------------------------------------------
-      - name: Chờ deployment hoàn tất (best-effort polling)
+      - name: Chờ đúng deployment hoàn tất
+        timeout-minutes: 16
         run: |
-          set -uo pipefail
-
-          MAX_ATTEMPTS=30   # 30 x 20s = tối đa 10 phút
-          INTERVAL=20
-
-          for i in $(seq 1 $MAX_ATTEMPTS); do
-            STATUS=$(curl -sS --max-time 15 \
-              "$DOKPLOY_URL/api/compose.readStatus" \
+          set -euo pipefail
+          DEADLINE=$((SECONDS + 900))
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            HTTP_CODE=$(curl -sS --max-time 15 --get \
+              "${DOKPLOY_URL%/}/api/deployment.allByCompose" \
               -H "x-api-key: $DOKPLOY_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"composeId\": \"$DOKPLOY_COMPOSE_ID\"}" \
-              2>/dev/null || echo "")
+              --data-urlencode "composeId=$DOKPLOY_COMPOSE_ID" \
+              -o /tmp/dokploy_deployments.json -w "%{http_code}") || HTTP_CODE=000
 
-            echo "[attempt $i/$MAX_ATTEMPTS] status: ${STATUS:-<không đọc được>}"
-
-            case "$STATUS" in
-              *error*)
-                echo "::error::Deployment trên Dokploy báo lỗi — xem log trong Dokploy UI."
-                exit 1
-                ;;
-              *done*|*idle*)
-                echo "Deployment hoàn tất sau $((i * INTERVAL))s."
-                exit 0
-                ;;
+            case "$HTTP_CODE" in
+              200)
+                # Log only the status; API payloads can contain sensitive metadata.
+                if ! STATUS=$(jq -er --arg title "$DEPLOYMENT_TITLE" '
+                  if type != "array" then error("Expected deployment array") else
+                    [ .[] | select(.title == $title) ] | sort_by(.createdAt) |
+                    if length == 0 then "queued" else .[-1].status end
+                  end' /tmp/dokploy_deployments.json); then
+                  echo "::error::API deployment trả dữ liệu không đúng định dạng."
+                  exit 1
+                fi
+                echo "Deployment của run này: $STATUS"
+                case "$STATUS" in
+                  done) echo "Deployment hoàn tất."; exit 0 ;;
+                  error|cancelled|canceled)
+                    echo "::error::Deployment $STATUS — xem Deployments → Logs trong Dokploy."
+                    exit 1 ;;
+                  queued|running) ;;
+                  *) echo "::error::Trạng thái deployment không được hỗ trợ."; exit 1 ;;
+                esac ;;
+              000|429|5??) echo "API tạm thời không khả dụng (HTTP $HTTP_CODE), thử lại." ;;
+              *)
+                echo "::error::API deployment.allByCompose trả HTTP $HTTP_CODE. Kiểm tra URL, Compose ID, quyền API key và phiên bản Dokploy."
+                exit 1 ;;
             esac
-
-            sleep $INTERVAL
+            REMAINING=$((DEADLINE - SECONDS))
+            if [ "$REMAINING" -gt 0 ]; then
+              DELAY=10
+              if [ "$REMAINING" -lt "$DELAY" ]; then DELAY=$REMAINING; fi
+              sleep "$DELAY"
+            fi
           done
-
-          echo "::warning::Hết 10 phút polling chưa đọc được trạng thái 'done'."
-          echo "Deploy có thể vẫn đang chạy — kiểm tra Dokploy UI → Deployments."
-          # Không fail: health check bên dưới mới là kết quả cuối.
+          echo "::error::Hết 15 phút chờ deployment; chưa xác nhận thành công. Xem log Dokploy."
+          exit 1
 
       # ---------------------------------------------------------------------------
       # 4. Health check app qua domain public (tùy chọn — đặt secret HEALTH_CHECK_URL,
