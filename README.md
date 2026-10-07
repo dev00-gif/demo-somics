@@ -10,15 +10,86 @@
 ```
 ┌─────────┐    HTTP POST     ┌──────────┐     MQTT publish     ┌──────────────┐
 │   FE    │ ───────────────▶ │ BE (Next)│ ───────────────────▶ │ MQTT Broker  │
-│ (web UI)│                  │ API route│                      │              │
+│ (web UI)│                  │ API route│                      │   (EMQX)     │
 └─────────┘                  └──────────┘                      └──────┬───────┘
-                                                                      │ subscribe
+                                                                      │ mqtts://:8883
                                                                       ▼
                                                                ┌──────────────┐
                                                                │ Thiết bị nhúng│
                                                                │ (ESP32/RTOS) │
                                                                └──────────────┘
 ```
+
+## Luồng hoạt động (device activation + gửi file theo thiết bị)
+
+```mermaid
+flowchart TD
+    %% =========================
+    %% LUỒNG 1: KÍCH HOẠT THIẾT BỊ LẦN ĐẦU
+    %% =========================
+    subgraph FIRST["1. Kích hoạt thiết bị lần đầu"]
+        A1[Bo mạch được nạp Firmware lần đầu] --> B1[Bo mạch khởi động]
+        B1 --> C1[Kết nối Internet<br/>WiFi / LAN / 4G]
+        C1 --> D1["Gọi Backend qua HTTPS<br/>POST /api/iot/activate"]
+        D1 --> E1["Gửi thông tin kích hoạt<br/>deviceId + activationCode"]
+        E1 --> F1[Backend nhận yêu cầu kích hoạt]
+        F1 --> G1{deviceId có tồn tại?}
+        G1 -- Không --> X1[Từ chối kích hoạt 403]
+        G1 -- Có --> H1{activationCode hợp lệ?}
+        H1 -- Không --> X1
+        H1 -- Có --> I1{activationCode đã sử dụng?}
+        I1 -- Có --> X1[409]
+        I1 -- Chưa --> J1[Backend xác nhận thiết bị hợp lệ]
+        J1 --> K1["Backend tạo MQTT Credential<br/>username = deviceId<br/>password random"]
+        K1 --> L1["Backend đăng ký credential<br/>với EMQX qua Management API"]
+        L1 --> M1[Đánh dấu activationCode = USED]
+        M1 --> N1["Backend trả về IoT<br/>mqttHost / mqttPort:8883 / username / password"]
+        N1 --> O1[IoT lưu MQTT Credential]
+        O1 --> P1["IoT kết nối MQTT qua TLS<br/>mqtts://host:8883"]
+        P1 --> Q1[MQTT CONNECT<br/>username + password]
+        Q1 --> R1{EMQX xác thực thành công?}
+        R1 -- Không --> Y1[Từ chối kết nối MQTT]
+        R1 -- Có --> S1[MQTT Connected]
+        S1 --> T1["IoT Subscribe<br/>station/player/device/ID/command"]
+        T1 --> U1["IoT Publish trạng thái định kỳ<br/>station/player/device/ID/status"]
+        U1 --> V1[BE cập nhật lastSeenAt → ONLINE]
+        V1 --> W1[Website hiển thị thiết bị Online]
+    end
+
+    %% =========================
+    %% LUỒNG 2: GỬI FILE ÂM THANH
+    %% =========================
+    subgraph AUDIO["2. Website gửi file âm thanh xuống IoT"]
+        A2[Website upload file MP3 + chọn thiết bị] --> B2[Backend nhận file]
+        B2 --> C2["Kiểm tra file<br/>định dạng + dung lượng<br/>tạo SHA256"]
+        C2 --> D2[Lưu file vào storage private]
+        D2 --> E2["Backend publish MQTT command<br/>fileId + sha256 + action<br/>topic riêng của thiết bị"]
+        E2 --> F2[Thiết bị IoT nhận MQTT]
+        F2 --> G2[Xác minh danh tính thiết bị]
+        G2 --> G21{Credential hợp lệ?}
+        G21 -- Không --> X2[Bỏ qua lệnh]
+        G21 -- Có --> I2["IoT gọi POST /api/iot/token<br/>đổi credential lấy Access + Refresh Token"]
+        I2 --> J2[IoT gọi API tải file]
+        J2 --> K2["GET /api/files/:fileId<br/>Authorization: Bearer AccessToken"]
+        K2 --> L2[Backend verify Access Token]
+        L2 --> M2{Thiết bị có quyền tải file?}
+        M2 -- Không --> N2[403 Forbidden]
+        M2 -- Có --> O2[Backend trả file qua HTTPS]
+        O2 --> P2[IoT tải file]
+        P2 --> Q2[IoT tính SHA256 file]
+        Q2 --> R2{SHA256 khớp Backend?}
+        R2 -- Không --> S2[Xóa file / Báo lỗi]
+        R2 -- Có --> T2[Phát file âm thanh]
+        T2 --> U2["IoT publish trạng thái qua MQTT<br/>DOWNLOADED / PLAYING / DONE"]
+    end
+
+    %% Nối 2 luồng
+    W1 --> A2
+```
+
+> So với luồng cũ: file **không còn tải public** qua `GET /api/files/:id` — mọi download
+> bắt buộc có Access Token do BE cấp sau khi xác thực credential của thiết bị, và chỉ
+> thiết bị được chỉ định (`sentTo`) mới có quyền tải.
 
 ## Cài đặt & chạy
 
@@ -98,15 +169,109 @@ chạy trên browser: connect, subscribe, publish không cần cài gì.
 
 ## API
 
-| Method | Endpoint | Body | Mô tả |
+| Method | Endpoint | Body / Auth | Mô tả |
 |---|---|---|---|
-| `POST` | `/api/announcement` | JSON `{ title, content, priority? }` | Publish bản tin text |
-| `POST` | `/api/upload` | FormData `file=<File>` | Upload file và publish URL tải file |
+| `POST` | `/api/iot/devices` | JSON `{ deviceId, code? }` | **Admin** đăng ký thiết bị mới + sinh mã kích hoạt |
+| `GET` | `/api/iot/devices` | — | Danh sách thiết bị + trạng thái online |
+| `POST` | `/api/iot/devices/:id/reprovision` | JSON `{ code? }` | **Admin** cấp lại mã kích hoạt khi thiết bị mất credential (thu hồi token cũ) |
+| `POST` | `/api/iot/activate` | JSON `{ deviceId, activationCode, firmwareVersion? }` | Thiết bị kích hoạt — trả MQTT credential (1 lần duy nhất); tự động ghi ACL per-topic |
+| `POST` | `/api/iot/token` | JSON `{ deviceId, mqttPassword, fileId? }` | Thiết bị đổi credential lấy CẶP token: accessToken TTL 10 phút + refreshToken TTL 30 ngày |
+| `POST` | `/api/iot/token/refresh` | JSON `{ deviceId, refreshToken }` | Đổi refresh token lấy cặp token mới (rotation — refresh dùng 1 lần rồi chết) |
+| `POST` | `/api/upload` | FormData `file=<File>` + `deviceId=<id>` | Upload file và gửi lệnh tải tới 1 thiết bị qua MQTT |
+| `GET` | `/api/files/:id` | Header `Authorization: Bearer <accessToken>` | Tải file — **bắt buộc token**, chỉ device được chỉ định |
+| `POST` | `/api/announcement` | JSON `{ title, content, priority? }` | Publish bản tin text (luồng cũ, giữ tương thích) |
 | `GET` | `/api/broker-status` | — | Kiểm tra kết nối broker |
 
 ## Hợp đồng MQTT cho bên nhúng (embedded)
 
 Base topic: `station/player` (đổi qua `MQTT_TOPIC_BASE` nếu muốn).
+
+### 0. Kích hoạt thiết bị (chạy 1 lần sau khi nạp firmware)
+
+1. Admin tạo thiết bị trên web (hoặc `POST /api/iot/devices` với `{"deviceId":"SOMICS-000001"}`)
+   → nhận mã kích hoạt dạng `XXXX-XXXX-XXXX`.
+2. Firmware gọi `POST /api/iot/activate`:
+   ```json
+   { "deviceId": "SOMICS-000001", "activationCode": "ABCD-EFGH-JKMN", "firmwareVersion": "1.0.0" }
+   ```
+3. Response chứa credential **duy nhất 1 lần** — firmware phải lưu vào NVS/flash:
+   ```json
+   {
+     "ok": true,
+     "mqtt": {
+       "mqttHost": "mqtt.example.com",
+       "mqttPort": 8883,
+       "mqttTls": true,
+       "username": "SOMICS-000001",
+       "password": "<random 24 bytes>",
+       "commandTopic": "station/player/device/SOMICS-000001/command",
+       "statusTopic": "station/player/device/SOMICS-000001/status"
+     }
+   }
+   ```
+4. Kết nối `mqtts://<mqttHost>:8883` (TLS, CA cert xem `deploy/emqx/README.md` mục 8),
+   subscribe `commandTopic`, publish status định kỳ ≤ 60s/lần vào `statusTopic`:
+   ```json
+   { "deviceId": "SOMICS-000001", "state": "IDLE", "uptime": 12345 }
+   ```
+   State gợi ý: `IDLE`, `DOWNLOADED`, `PLAYING`, `DONE`, `ERROR`. BE coi thiết bị
+   ONLINE nếu có status trong 2 phút gần nhất.
+5. Nhận lệnh file qua `commandTopic`:
+   ```json
+   { "type": "file", "action": "download", "fileId": "uuid", "fileName": "bai-hat.mp3",
+     "size": 1048576, "sha256": "hex", "tokenEndpoint": "/api/iot/token",
+     "refreshEndpoint": "/api/iot/token/refresh",
+     "downloadEndpoint": "/api/files/<uuid>" }
+   ```
+6. Lần đầu tải file: `POST /api/iot/token` với `{"deviceId":"...","mqttPassword":"...","fileId":"..."}`
+   → nhận **cặp token**:
+   ```json
+   {
+     "ok": true,
+     "accessToken": "...",      // TTL 10 phút — dùng tải file
+     "refreshToken": "...",     // TTL 30 ngày — dùng đổi cặp mới
+     "tokenType": "Bearer",
+     "expiresIn": 600,
+     "refreshExpiresIn": 2592000,
+     "refreshEndpoint": "/api/iot/token/refresh"
+   }
+   ```
+   → `GET /api/files/<uuid>` kèm `Authorization: Bearer <accessToken>`
+   → kiểm tra SHA256 sau khi tải → phát → publish status `DOWNLOADED/PLAYING/DONE`.
+7. Khi accessToken hết hạn: `POST /api/iot/token/refresh` với
+   `{"deviceId":"...","refreshToken":"..."}` → nhận cặp token mới.
+   **Refresh token dùng 1 lần rồi chết (rotation)** — cặp mới trả về thay thế cặp cũ.
+   Không cần gửi lại mqttPassword. Refresh token hết hạn (30 ngày) hoặc bị mất
+   thì quay lại bước 6 (login bằng credential).
+
+### 0.1 ACL — giới hạn topic cho từng thiết bị
+
+Khi kích hoạt (lần đầu hoặc re-provision), backend tự ghi ACL vào authorizer
+`built_in_database` của EMQX cho từng device user:
+
+- **Cho phép** subscribe `station/player/device/<ID>/command`
+- **Cho phép** publish `station/player/device/<ID>/status`
+- **Mọi topic khác bị từ chối** (EMQX deny mặc định khi không khớp rule allow nào)
+
+Nhờ vậy thiết bị A không thể nghe lệnh của thiết bị B hay giả mạo status của nhau.
+Yêu cầu: authorizer `built_in_database` phải tồn tại — backend tự tạo qua API
+(`ensureBuiltInAuthzSource`) nếu chưa có.
+
+### 0.2 Re-provision — thiết bị mất credential
+
+Khi thiết bị bị mất credential (flash xóa, firmware reset...):
+
+1. Admin bấm **"Cấp lại mã"** trên web (hoặc `POST /api/iot/devices/<ID>/reprovision`):
+   - Thu hồi mọi mã chờ cũ của thiết bị (chỉ 1 mã active tại 1 thời điểm)
+   - Sinh mã kích hoạt mới + thu hồi ngay mọi access token chưa hết hạn
+2. Đưa mã mới cho bên nhúng nạp vào firmware.
+3. Thiết bị gọi lại `POST /api/iot/activate` như lần đầu — PUT user trên EMQX
+   **override password cũ** → credential cũ chết ngay lập tức, device kết nối lại
+   với credential mới, ACL được ghi lại.
+
+> Thiết bị **không** activate lại thì credential cũ vẫn đăng nhập được broker
+> (vẫn hợp lệ trên EMQX). Nếu nghi bị mất cắp credential chứ không chỉ mất cục bộ,
+> hãy dùng Dashboard EMQX xóa tay user đó trước khi cấp lại mã.
 
 ### Kết nối từ thiết bị nhúng
 

@@ -10,6 +10,11 @@
 # production
 /build
 /uploads
+/data
+
+# TLS certs (đã có gitignore riêng trong deploy/emqx/certs)
+*.crt
+*.key
 
 # misc
 .DS_Store

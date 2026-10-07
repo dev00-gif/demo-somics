@@ -15,9 +15,11 @@
 
 import mqtt, { type MqttClient } from "mqtt";
 
+import { touchDevice } from "@/lib/devices";
+
 export const TOPIC_BASE = process.env.MQTT_TOPIC_BASE ?? "station/player";
 
-/** Topics mà bên nhúng sẽ lắng nghe */
+/** Topics chung (luồng cũ, giữ tương thích MQTTX) */
 export const TOPICS = {
   /** Gửi bản tin dạng text (JSON) */
   announcement: `${TOPIC_BASE}/announcement`,
@@ -26,6 +28,14 @@ export const TOPICS = {
   /** Lệnh điều khiển phát (play/stop/skip...) */
   control: `${TOPIC_BASE}/control`,
 } as const;
+
+/** Topics riêng cho từng thiết bị (luồng mới — xem src/lib/devices.ts deviceTopics) */
+export function topicsForDevice(deviceId: string): { command: string; status: string } {
+  return {
+    command: `${TOPIC_BASE}/device/${encodeURIComponent(deviceId)}/command`,
+    status: `${TOPIC_BASE}/device/${encodeURIComponent(deviceId)}/status`,
+  };
+}
 
 // ==============================================================================
 // SINGLETON CLIENT
@@ -71,6 +81,29 @@ function createClient(): MqttClient {
   });
   client.on("offline", () => {
     console.warn("[mqtt] client offline (đang chờ reconnect)");
+  });
+
+  // Subscribe status của mọi thiết bị — BE cập nhật lastSeenAt để web hiển thị
+  // Online/Offline. `resubscribe: true` tự đăng ký lại sau mỗi lần reconnect.
+  client.subscribe(`${TOPIC_BASE}/device/+/status`, { qos: 1 }, (err) => {
+    if (err) console.error("[mqtt] subscribe device status thất bại:", err.message);
+  });
+
+  // Nhận status từ thiết bị: { deviceId, state, ... } → touch device registry
+  client.on("message", (topic, payload) => {
+    if (!topic.endsWith("/status")) return;
+    const match = topic.match(/device\/([^/]+)\/status$/);
+    if (!match) return;
+    const deviceId = decodeURIComponent(match[1]);
+    try {
+      const msg = JSON.parse(payload.toString()) as Record<string, unknown>;
+      console.log(`[mqtt] status từ ${deviceId}: ${String(msg.state ?? "?")}`);
+    } catch {
+      console.warn(`[mqtt] payload status không phải JSON từ ${deviceId}`);
+    }
+    void touchDevice(deviceId).catch((err) =>
+      console.error(`[mqtt] touch device ${deviceId} lỗi:`, err.message),
+    );
   });
 
   return client;
@@ -208,6 +241,20 @@ export async function publishFileAvailable(file: FileAvailable): Promise<void> {
     1,
     true,
   );
+}
+
+/**
+ * Gửi lệnh/file tới 1 thiết bị cụ thể qua topic command riêng của nó.
+ * Dùng cho luồng mới: BE publish { fileId, action } → device tải file bằng
+ * access token (xem /api/upload và /api/files/[id]).
+ */
+export async function publishDeviceCommand(
+  deviceId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const { command } = topicsForDevice(deviceId);
+  const message = { ...payload, sentAt: new Date().toISOString() };
+  await publish(command, JSON.stringify(message));
 }
 
 /** Graceful shutdown (dùng khi server đóng — vd signal SIGTERM trên container) */

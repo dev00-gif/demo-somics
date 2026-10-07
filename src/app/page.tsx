@@ -11,8 +11,16 @@ interface UploadResult {
     fileName: string;
     size: number;
     sha256: string;
-    downloadUrl: string;
+    sentTo?: string;
   };
+}
+
+interface DeviceItem {
+  deviceId: string;
+  activatedAt: string | null;
+  firmwareVersion: string | null;
+  lastSeenAt: string | null;
+  online: boolean;
 }
 
 type LogKind = "info" | "success" | "error";
@@ -45,6 +53,16 @@ export default function Home() {
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Danh sách thiết bị + thiết bị được chọn để nhận file
+  const [devices, setDevices] = useState<DeviceItem[]>([]);
+  const [targetDevice, setTargetDevice] = useState("");
+  const [newDeviceId, setNewDeviceId] = useState("");
+  const [createdCode, setCreatedCode] = useState<{
+    deviceId: string;
+    code: string;
+    reprovision: boolean;
+  } | null>(null);
 
   const addLog = useCallback((kind: LogKind, text: string) => {
     const time = new Date().toLocaleTimeString("vi-VN");
@@ -79,6 +97,80 @@ export default function Home() {
     };
   }, [addLog]);
 
+  // Nạp danh sách thiết bị lúc mount + mỗi 15s (cập nhật trạng thái online)
+  const loadDevices = useCallback(async () => {
+    try {
+      const res = await fetch("/api/iot/devices");
+      const data = (await res.json()) as { ok: boolean; devices?: DeviceItem[] };
+      if (data.ok && data.devices) setDevices(data.devices);
+    } catch {
+      // im lặng — panel thiết bị chỉ là phụ trợ
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDevices();
+    const timer = setInterval(() => void loadDevices(), 15_000);
+    return () => clearInterval(timer);
+  }, [loadDevices]);
+
+  /** Tạo thiết bị mới + mã kích hoạt */
+  const handleCreateDevice = async () => {
+    const id = newDeviceId.trim().toUpperCase();
+    if (!id) return;
+    try {
+      const res = await fetch("/api/iot/devices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId: id }),
+      });
+      const data = (await res.json()) as {
+        ok: boolean;
+        error?: string;
+        activationCode?: string;
+      };
+      if (data.ok && data.activationCode) {
+        setCreatedCode({ deviceId: id, code: data.activationCode, reprovision: false });
+        setNewDeviceId("");
+        addLog("success", `Đã tạo thiết bị ${id} — mã kích hoạt: ${data.activationCode}`);
+        void loadDevices();
+      } else {
+        addLog("error", `Tạo thiết bị lỗi: ${data.error ?? res.status}`);
+      }
+    } catch {
+      addLog("error", "Lỗi mạng khi tạo thiết bị");
+    }
+  };
+
+  /** Cấp lại mã kích hoạt cho thiết bị bị mất credential (re-provision) */
+  const handleReprovision = async (deviceId: string) => {
+    try {
+      const res = await fetch(`/api/iot/devices/${encodeURIComponent(deviceId)}/reprovision`, {
+        method: "POST",
+      });
+      const data = (await res.json()) as {
+        ok: boolean;
+        error?: string;
+        activationCode?: string;
+        revokedAccessTokens?: number;
+      };
+      if (data.ok && data.activationCode) {
+        setCreatedCode({ deviceId, code: data.activationCode, reprovision: true });
+        addLog(
+          "success",
+          `Đã cấp mã mới cho ${deviceId}: ${data.activationCode}` +
+            (data.revokedAccessTokens
+              ? ` (thu hồi ${data.revokedAccessTokens} access token cũ)`
+              : ""),
+        );
+      } else {
+        addLog("error", `Re-provision lỗi: ${data.error ?? res.status}`);
+      }
+    } catch {
+      addLog("error", `Lỗi mạng khi re-provision ${deviceId}`);
+    }
+  };
+
   /** Xử lý khi chọn file */
   const handleSelectFile = (selected: File | null) => {
     setResult(null);
@@ -97,20 +189,21 @@ export default function Home() {
     addLog("info", `Đã chọn file: ${selected.name} (${formatBytes(selected.size)})`);
   };
 
-  /** Gửi file lên BE -> publish MQTT */
+  /** Gửi file lên BE -> publish MQTT cho thiết bị được chọn */
   const handleUpload = async () => {
-    if (!file || uploading) return;
+    if (!file || uploading || !targetDevice) return;
 
     setUploading(true);
     setResult(null);
     setProgress(0);
-    addLog("info", `Bắt đầu gửi "${file.name}" lên server...`);
+    addLog("info", `Bắt đầu gửi "${file.name}" tới ${targetDevice}...`);
 
     try {
       const data = await new Promise<UploadResult>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         const formData = new FormData();
         formData.append("file", file);
+        formData.append("deviceId", targetDevice);
 
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
@@ -200,8 +293,34 @@ export default function Home() {
           <section className="rounded-2xl border border-slate-700 bg-slate-800/60 p-6 shadow-lg">
             <h2 className="mb-1 text-lg font-semibold">🎵 Gửi file nhạc</h2>
             <p className="mb-4 text-sm text-slate-400">
-              Chọn file mp3/wav (tối đa 20MB). BE sẽ gửi URL tải file qua MQTT.
+              Chọn file mp3/wav (tối đa 20MB) và thiết bị nhận. Thiết bị sẽ tải file
+              qua HTTPS bằng access token riêng.
             </p>
+
+            {/* Chọn thiết bị đích */}
+            <div className="mb-4">
+              <label className="mb-1 block text-sm text-slate-400">
+                Thiết bị nhận <span className="text-red-400">*</span>
+              </label>
+              <select
+                value={targetDevice}
+                onChange={(e) => setTargetDevice(e.target.value)}
+                className="w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-emerald-400"
+              >
+                <option value="">— Chọn thiết bị —</option>
+                {devices.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId} disabled={!d.online}>
+                    {d.deviceId} {d.online ? "● online" : "○ offline"}
+                    {d.activatedAt ? "" : " (chưa kích hoạt)"}
+                  </option>
+                ))}
+              </select>
+              {devices.length === 0 && (
+                <p className="mt-1 text-xs text-amber-400">
+                  Chưa có thiết bị — tạo ở panel "Thiết bị" bên dưới.
+                </p>
+              )}
+            </div>
 
             {/* Nút upload */}
             <label
@@ -256,10 +375,14 @@ export default function Home() {
 
             <button
               onClick={handleUpload}
-              disabled={!file || uploading}
+              disabled={!file || uploading || !targetDevice}
               className="mt-4 w-full rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-400"
             >
-              {uploading ? "Đang xử lý..." : "Gửi lên MQTT"}
+              {uploading
+                ? "Đang xử lý..."
+                : targetDevice
+                  ? `Gửi tới ${targetDevice}`
+                  : "Chọn thiết bị trước"}
             </button>
             <button
               onClick={() => handleSelectFile(null)}
@@ -329,7 +452,92 @@ export default function Home() {
             </div>
           </section>
 
-          {/* ===== Card 3: Log ===== */}
+          {/* ===== Card 3: Thiết bị (danh sách + tạo mới) ===== */}
+          <section className="rounded-2xl border border-slate-700 bg-slate-800/60 p-6 shadow-lg lg:col-span-2">
+            <h2 className="mb-1 text-lg font-semibold">🔌 Thiết bị</h2>
+            <p className="mb-4 text-sm text-slate-400">
+              Trạng thái cập nhật từ MQTT status topic mỗi 15s. Thiết bị online mới
+              nhận được file.
+            </p>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              {/* Danh sách thiết bị */}
+              <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                {devices.length === 0 ? (
+                  <p className="p-2 text-sm text-slate-500">Chưa có thiết bị nào.</p>
+                ) : (
+                  <ul className="divide-y divide-slate-800">
+                    {devices.map((d) => (
+                      <li key={d.deviceId} className="flex items-center justify-between gap-2 px-2 py-2 text-sm">
+                        <div className="min-w-0">
+                          <span className="font-mono text-slate-200">{d.deviceId}</span>
+                          {d.firmwareVersion && (
+                            <span className="ml-2 text-xs text-slate-500">fw {d.firmwareVersion}</span>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                              d.online
+                                ? "bg-emerald-900/60 text-emerald-300"
+                                : "bg-slate-700/60 text-slate-400"
+                            }`}
+                          >
+                            {d.online ? "● Online" : "○ Offline"}
+                          </span>
+                          <button
+                            onClick={() => handleReprovision(d.deviceId)}
+                            title="Cấp lại mã kích hoạt (thiết bị mất credential)"
+                            className="rounded border border-slate-600 px-2 py-0.5 text-xs text-slate-300 transition hover:border-amber-400 hover:text-amber-300"
+                          >
+                            Cấp lại mã
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Form tạo thiết bị mới */}
+              <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-4">
+                <h3 className="mb-2 text-sm font-semibold text-slate-300">
+                  Đăng ký thiết bị mới (admin)
+                </h3>
+                <div className="flex gap-2">
+                  <input
+                    value={newDeviceId}
+                    onChange={(e) => setNewDeviceId(e.target.value)}
+                    placeholder="SOMICS-000001"
+                    className="flex-1 rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 font-mono text-sm outline-none focus:border-emerald-400"
+                  />
+                  <button
+                    onClick={handleCreateDevice}
+                    className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-500"
+                  >
+                    Tạo
+                  </button>
+                </div>
+                {createdCode && (
+                  <div className="mt-3 rounded-lg bg-emerald-900/40 p-3 text-sm text-emerald-300">
+                    <p className="font-medium">
+                      {createdCode.reprovision
+                        ? `Mã mới cho ${createdCode.deviceId} (hiện 1 lần):`
+                        : `Mã kích hoạt cho ${createdCode.deviceId} (hiện 1 lần):`}
+                    </p>
+                    <p className="mt-1 font-mono text-lg tracking-widest">{createdCode.code}</p>
+                    <p className="mt-1 text-xs text-emerald-400/80">
+                      {createdCode.reprovision
+                        ? "Thiết bị gọi lại POST /api/iot/activate với mã này — credential cũ bị thay thế ngay."
+                        : "Đưa deviceId + mã này cho bên nhúng nạp vào firmware. Thiết bị sẽ tự gọi POST /api/iot/activate."}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {/* ===== Card 4: Log ===== */}
           <section className="rounded-2xl border border-slate-700 bg-slate-800/60 p-6 shadow-lg lg:col-span-2">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-semibold">🧾 Nhật ký hoạt động</h2>

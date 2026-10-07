@@ -106,6 +106,14 @@ services:
       # Public URL của app để thiết bị nhúng tải file từ downloadUrl trong MQTT.
       # Nếu bỏ trống, app tự suy ra từ Host/x-forwarded-* của request upload.
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
+      # ===== Kích hoạt thiết bị — backend cấp user MQTT qua EMQX API =====
+      EMQX_API_URL: http://emqx:18083
+      EMQX_DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-admin}
+      EMQX_DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      # Thông tin MQTT public trả cho thiết bị lúc activate (TLS 8883)
+      MQTT_PUBLIC_HOST: ${MQTT_PUBLIC_HOST:-}
+      MQTT_PUBLIC_PORT: ${MQTT_PUBLIC_PORT:-8883}
+      MQTT_PUBLIC_TLS: ${MQTT_PUBLIC_TLS:-true}
     # KHÔNG publish port app ra host khi chạy trên Dokploy — port 3000 đã bị
     # Dashboard Dokploy chiếm. Truy cập app qua Dokploy → Domains (Traefik →
     # container qua dokploy-network). Chạy compose ngoài Dokploy thì thêm lại:
@@ -114,6 +122,7 @@ services:
     restart: unless-stopped
     volumes:
       - app_uploads:/app/uploads
+      - app_data:/app/data   # registry thiết bị + mã kích hoạt + token
     deploy:
       resources:
         limits:
@@ -180,3 +189,4 @@ volumes:
   emqx_data:
   emqx_log:
   app_uploads:
+  app_data:

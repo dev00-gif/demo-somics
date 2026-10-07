@@ -97,6 +97,8 @@ jobs:
         run: |
           set -euo pipefail
           DEADLINE=$((SECONDS + 900))
+          DEPLOYMENT_ID=""
+          MISSING_COUNT=0
           while [ "$SECONDS" -lt "$DEADLINE" ]; do
             HTTP_CODE=$(curl -sS --max-time 15 --get \
               "${DOKPLOY_URL%/}/api/deployment.allByCompose" \
@@ -106,14 +108,42 @@ jobs:
 
             case "$HTTP_CODE" in
               200)
-                # Log only the status; API payloads can contain sensitive metadata.
-                if ! STATUS=$(jq -er --arg title "$DEPLOYMENT_TITLE" '
-                  if type != "array" then error("Expected deployment array") else
-                    [ .[] | select(.title == $title) ] | sort_by(.createdAt) |
-                    if length == 0 then "queued" else .[-1].status end
-                  end' /tmp/dokploy_deployments.json); then
+                # Pin the immutable ID once; the title may change during deployment.
+                if ! jq -e 'type == "array"' /tmp/dokploy_deployments.json > /dev/null; then
                   echo "::error::API deployment trả dữ liệu không đúng định dạng."
                   exit 1
+                fi
+                if [ -z "$DEPLOYMENT_ID" ]; then
+                  if ! DEPLOYMENT_ID=$(jq -r --arg title "$DEPLOYMENT_TITLE" '
+                    [ .[] | select(.title == $title) ] | sort_by(.createdAt) |
+                    if length == 0 then "" else
+                      .[-1].deploymentId |
+                      if type == "string" and length > 0 then . else error("Missing deploymentId") end
+                    end' /tmp/dokploy_deployments.json); then
+                    echo "::error::Deployment không có ID hợp lệ."
+                    exit 1
+                  fi
+                  if [ -n "$DEPLOYMENT_ID" ]; then
+                    echo "Theo dõi deploymentId=$DEPLOYMENT_ID"
+                  fi
+                fi
+                if [ -z "$DEPLOYMENT_ID" ]; then
+                  STATUS=waiting_for_record
+                elif ! STATUS=$(jq -er --arg id "$DEPLOYMENT_ID" '
+                  [ .[] | select(.deploymentId == $id) ] |
+                  if length == 0 then "missing" else .[0].status end
+                  ' /tmp/dokploy_deployments.json); then
+                  echo "::error::Không đọc được trạng thái deployment."
+                  exit 1
+                fi
+                if [ "$STATUS" = "missing" ]; then
+                  MISSING_COUNT=$((MISSING_COUNT + 1))
+                  if [ "$MISSING_COUNT" -ge 3 ]; then
+                    echo "::error::Deployment $DEPLOYMENT_ID đã từng xuất hiện nhưng mất khỏi 3 phản hồi API liên tiếp. Kiểm tra Deployments trong Dokploy; không thể xác nhận deploy thành công."
+                    exit 1
+                  fi
+                else
+                  MISSING_COUNT=0
                 fi
                 echo "Deployment của run này: $STATUS"
                 case "$STATUS" in
@@ -121,7 +151,7 @@ jobs:
                   error|cancelled|canceled)
                     echo "::error::Deployment $STATUS — xem Deployments → Logs trong Dokploy."
                     exit 1 ;;
-                  queued|running) ;;
+                  waiting_for_record|running|missing) ;;
                   *) echo "::error::Trạng thái deployment không được hỗ trợ."; exit 1 ;;
                 esac ;;
               000|429|5??) echo "API tạm thời không khả dụng (HTTP $HTTP_CODE), thử lại." ;;
