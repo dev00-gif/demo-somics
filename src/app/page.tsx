@@ -124,18 +124,20 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ deviceId: id }),
       });
-      const data = (await res.json()) as {
+      // Server lỗi (500/502) có thể trả HTML thay vì JSON — parse an toàn để
+      // hiện đúng mã HTTP thay vì nhầm thành "lỗi mạng".
+      const data = (await res.json().catch(() => null)) as {
         ok: boolean;
         error?: string;
         activationCode?: string;
-      };
-      if (data.ok && data.activationCode) {
+      } | null;
+      if (data?.ok && data.activationCode) {
         setCreatedCode({ deviceId: id, code: data.activationCode, reprovision: false });
         setNewDeviceId("");
         addLog("success", `Đã tạo thiết bị ${id} — mã kích hoạt: ${data.activationCode}`);
         void loadDevices();
       } else {
-        addLog("error", `Tạo thiết bị lỗi: ${data.error ?? res.status}`);
+        addLog("error", `Tạo thiết bị lỗi: ${data?.error ?? `HTTP ${res.status}`}`);
       }
     } catch {
       addLog("error", "Lỗi mạng khi tạo thiết bị");
@@ -148,13 +150,13 @@ export default function Home() {
       const res = await fetch(`/api/iot/devices/${encodeURIComponent(deviceId)}/reprovision`, {
         method: "POST",
       });
-      const data = (await res.json()) as {
+      const data = (await res.json().catch(() => null)) as {
         ok: boolean;
         error?: string;
         activationCode?: string;
         revokedAccessTokens?: number;
-      };
-      if (data.ok && data.activationCode) {
+      } | null;
+      if (data?.ok && data.activationCode) {
         setCreatedCode({ deviceId, code: data.activationCode, reprovision: true });
         addLog(
           "success",
@@ -164,7 +166,7 @@ export default function Home() {
               : ""),
         );
       } else {
-        addLog("error", `Re-provision lỗi: ${data.error ?? res.status}`);
+        addLog("error", `Re-provision lỗi: ${data?.error ?? `HTTP ${res.status}`}`);
       }
     } catch {
       addLog("error", `Lỗi mạng khi re-provision ${deviceId}`);

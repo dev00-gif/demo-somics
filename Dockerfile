@@ -46,10 +46,12 @@ ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
 # Tạo user non-root để chạy app (không chạy bằng root)
+# /app/data: registry thiết bị (devices.json...) — volume app_data mount vào đây,
+# PHẢI chown trước (Docker chỉ copy ownership từ image vào volume khi volume trống).
 RUN addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 nextjs \
-    && mkdir -p /app/uploads \
-    && chown -R nextjs:nodejs /app/uploads
+    && mkdir -p /app/uploads /app/data \
+    && chown -R nextjs:nodejs /app/uploads /app/data
 
 # Copy output standalone từ builder (bao gồm server.js tối giản)
 COPY --from=builder /app/public ./public
