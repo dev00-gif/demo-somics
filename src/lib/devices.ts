@@ -17,6 +17,8 @@
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { readUploadedTrack } from "@/lib/audio-files";
+import { isFileId, mergePlaybackStatus, type DevicePlayback } from "@/lib/playback";
 
 // ==============================================================================
 // TYPES
@@ -37,6 +39,8 @@ export interface Device {
   lastSeenAt: string | null;
   /** true nếu đang nhận status định kỳ (còn trong cửa sổ ONLINE_WINDOW_MS) */
   online: boolean;
+  /** Bài đang phát và vị trí thực tế do thiết bị báo qua MQTT status. */
+  playback?: DevicePlayback;
 }
 
 export interface ActivationCode {
@@ -146,7 +150,16 @@ export async function saveDevice(device: Device): Promise<void> {
  * Cập nhật lastSeenAt (được gọi từ MQTT message handler khi device publish
  * status). Trả device sau khi cập nhật, null nếu device chưa đăng ký.
  */
-export async function touchDevice(deviceId: string): Promise<Device | null> {
+// Heartbeat liên tiếp phải tuần tự để không ghi đè trạng thái bài hoặc cùng temp file.
+let statusQueue: Promise<unknown> = Promise.resolve();
+
+export function touchDevice(deviceId: string, status?: Record<string, unknown>): Promise<Device | null> {
+  const update = statusQueue.then(() => updateDeviceStatus(deviceId, status));
+  statusQueue = update.catch(() => undefined);
+  return update;
+}
+
+async function updateDeviceStatus(deviceId: string, status?: Record<string, unknown>): Promise<Device | null> {
   const d = await readStore<Record<string, Device>>(DEVICES_FILE, {});
   const dev = d[deviceId];
   if (!dev) return null;
@@ -154,6 +167,12 @@ export async function touchDevice(deviceId: string): Promise<Device | null> {
   const now = new Date().toISOString();
   dev.lastSeenAt = now;
   dev.online = true;
+  if (status) {
+    const fileId = isFileId(status.fileId) ? status.fileId : dev.playback?.fileId;
+    const track = fileId && (fileId !== dev.playback?.fileId || !dev.playback?.durationSeconds)
+      ? await readUploadedTrack(fileId, deviceId) : null;
+    dev.playback = mergePlaybackStatus(dev.playback, status, track);
+  }
   await writeStore(DEVICES_FILE, d);
   return { ...dev, lastSeenAt: now, online: true };
 }

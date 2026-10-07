@@ -16,9 +16,11 @@ import { NextResponse } from "next/server";
 import crypto from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { parseBuffer } from "music-metadata";
 
 import { getDevice } from "@/lib/devices";
 import { publishDeviceCommand, type FileAvailable } from "@/lib/mqtt";
+import { isDuration } from "@/lib/playback";
 
 export const runtime = "nodejs";
 // Tăng timeout cho request upload file lớn
@@ -95,6 +97,13 @@ export async function POST(request: Request) {
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
+    let durationSeconds: number | null = null;
+    try {
+      const metadata = await parseBuffer(buffer, { mimeType: file.type || undefined, path: file.name, size: buffer.length }, { duration: true, skipCovers: true });
+      if (isDuration(metadata.format.duration)) durationSeconds = metadata.format.duration;
+    } catch (err) {
+      console.warn("[upload] Không đọc được thời lượng file:", err instanceof Error ? err.message : err);
+    }
     const id = crypto.randomUUID();
     const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
     const storedName = `${id}-${sanitizeStoredName(file.name)}`;
@@ -113,6 +122,7 @@ export async function POST(request: Request) {
       sha256,
       downloadUrl: `/api/files/${id}`, // path nội bộ — device tải bằng access token
       uploadedAt,
+      durationSeconds,
       sentTo: deviceId,
     };
 
@@ -129,6 +139,7 @@ export async function POST(request: Request) {
       mimeType: meta.mimeType,
       size: meta.size,
       sha256: meta.sha256,
+      durationSeconds,
       tokenEndpoint: "/api/iot/token",
       refreshEndpoint: "/api/iot/token/refresh",
       downloadEndpoint: `/api/files/${id}`,
@@ -143,6 +154,7 @@ export async function POST(request: Request) {
         size: meta.size,
         sha256: meta.sha256,
         sentTo: deviceId,
+        durationSeconds,
       },
     });
   } catch (err) {

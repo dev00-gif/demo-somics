@@ -174,7 +174,7 @@ chạy trên browser: connect, subscribe, publish không cần cài gì.
 | `POST` | `/api/iot/devices` | JSON `{ deviceId, code? }` | **Admin** đăng ký thiết bị mới + sinh mã kích hoạt |
 | `GET` | `/api/iot/devices` | — | Danh sách thiết bị + trạng thái online |
 | `POST` | `/api/iot/devices/:id/reprovision` | JSON `{ code? }` | **Admin** cấp lại mã kích hoạt khi thiết bị mất credential (thu hồi token cũ) |
-| `POST` | `/api/iot/devices/:id/control` | JSON `{ action, volume? }` | Điều khiển âm lượng, tạm dừng/tiếp tục, bài tiếp/bài trước cho thiết bị đã kích hoạt và online |
+| `POST` | `/api/iot/devices/:id/control` | JSON `{ action, volume?, repeat?, fileId?, positionSeconds? }` | Điều khiển âm lượng, lặp lại, tua, tạm dừng/tiếp tục, bài tiếp/bài trước cho thiết bị đã kích hoạt và online |
 | `POST` | `/api/iot/activate` | JSON `{ deviceId, activationCode, firmwareVersion? }` | Thiết bị kích hoạt — trả MQTT credential (1 lần duy nhất); tự động ghi ACL per-topic |
 | `POST` | `/api/iot/token` | JSON `{ deviceId, mqttPassword, fileId? }` | Thiết bị đổi credential lấy CẶP token: accessToken TTL 10 phút + refreshToken TTL 30 ngày |
 | `POST` | `/api/iot/token/refresh` | JSON `{ deviceId, refreshToken }` | Đổi refresh token lấy cặp token mới (rotation — refresh dùng 1 lần rồi chết) |
@@ -248,8 +248,9 @@ Base topic: `station/player` (đổi qua `MQTT_TOPIC_BASE` nếu muốn).
 ### 0.1 Điều khiển phát nhạc trên website
 
 Chọn một thiết bị đã kích hoạt và online trong **Thiết bị nhận** để hiện thanh
-điều khiển: âm lượng 0–100%, nút giảm/tăng 5%, tạm dừng/tiếp tục, bài trước và
-bài tiếp. Khi thiết bị offline, thanh điều khiển được ẩn ở lần cập nhật danh sách
+điều khiển: âm lượng 0–100%, nút giảm/tăng 5%, tạm dừng/tiếp tục, bài trước,
+bài tiếp, bật/tắt lặp lại bài hiện tại và thanh tua kèm thời gian đã phát/tổng
+thời lượng. Khi thiết bị offline, thanh điều khiển được ẩn ở lần cập nhật danh sách
 kế tiếp; API cũng kiểm tra heartbeat trong 2 phút gần nhất trước khi gửi lệnh.
 
 `POST /api/iot/devices/SOMICS-000001/control` với `{"action":"set_volume","volume":70}`
@@ -272,13 +273,56 @@ publish lên **commandTopic riêng của thiết bị**, QoS 1, không retained:
 | `resume` | Tiếp tục bài đã tạm dừng |
 | `next` | Chuyển đến bài tiếp theo trong danh sách trên thiết bị |
 | `previous` | Quay về bài trước trong danh sách trên thiết bị |
+| `set_repeat` | `repeat: "one"` lặp lại bài hiện tại, `repeat: "off"` tắt lặp lại |
+| `seek` | Tua bài `fileId` tới `positionSeconds` (giây, cho phép số thập phân); giữ nguyên trạng thái phát/tạm dừng |
 
-Các lệnh ngoài `set_volume` không có trường `volume`. Firmware cần xử lý các
-action này, dedupe theo `id` vì QoS 1 có thể gửi lại, và có danh sách bài để
-chuyển bài. Website báo **đã gửi lệnh** khi broker nhận lệnh, chưa xác nhận
-thiết bị đã thực thi. Thanh âm lượng khởi tạo ở mức chọn 50% và nút tạm dừng/
-tiếp tục phản ánh lệnh gần nhất gửi thành công trong phiên; không tự gửi lệnh
-khi chọn thiết bị, chưa đồng bộ trạng thái phát hay âm lượng từ firmware.
+Ví dụ body lặp lại: `{"action":"set_repeat","repeat":"one"}`.
+Ví dụ body tua: `{"action":"seek","fileId":"<uuid bài đang phát>","positionSeconds":75.5}`.
+BE kiểm tra file đang phát, trạng thái `PLAYING`/`PAUSED` và giới hạn thời lượng
+trước khi publish; firmware cũng phải kiểm tra `fileId` còn khớp bài hiện tại
+khi nhận lệnh để không tua nhầm bài sau khi chuyển bài.
+
+BE đọc thời lượng bằng `music-metadata` khi upload, lưu `durationSeconds` vào
+metadata file và gửi kèm lệnh `download`/response upload. Nếu không đọc được,
+giá trị là `null`; firmware có thể báo lại thời lượng từ bộ giải mã. Không gán
+thời lượng của file vừa upload cho một bài khác đang phát.
+
+Firmware publish vào **statusTopic** khi bắt đầu phát, tua, chuyển bài, tạm dừng,
+đổi lặp lại/âm lượng, và mỗi 1–2 giây khi đang phát:
+
+```json
+{
+  "deviceId": "SOMICS-000001",
+  "state": "PLAYING",
+  "fileId": "11111111-1111-4111-8111-111111111111",
+  "fileName": "bai-hat.mp3",
+  "durationSeconds": 210.5,
+  "positionSeconds": 75.5,
+  "repeat": "one",
+  "volume": 70
+}
+```
+
+`fileId` dùng UUID đã nhận trong lệnh download. `state` hỗ trợ `PAUSED` và các
+trạng thái cũ (`IDLE`, `DOWNLOADED`, `PLAYING`, `DONE`, `ERROR`). Vị trí/thời
+lượng dùng **giây**, không phải millisecond. Khi hết bài, publish `DONE`; khi
+không còn bài, publish `IDLE` hoặc `fileId: null`. Khi lặp lại, báo vị trí mới
+quay về 0. BE lưu trạng thái trong registry để mở lại web vẫn thấy bài hiện tại;
+nếu firmware chỉ báo `fileId`, BE lấy tên/thời lượng từ metadata file của đúng
+thiết bị. File cũ chưa có metadata thời lượng cần firmware báo `durationSeconds`.
+
+Website cập nhật trạng thái mỗi 2 giây khi chọn thiết bị, nội suy vị trí giữa
+các status chỉ khi `PLAYING`, dừng đồng hồ khi `PAUSED` và không vượt tổng
+thời lượng. Kéo thanh xem trước vị trí; thả chuột/chạm hoặc dùng phím điều hướng
+để gửi một lệnh tua. Thanh tua bị vô hiệu hóa khi chưa biết bài/thời lượng hoặc
+khi bài đã kết thúc. Nút lặp lại sáng khi bật và có thể bấm lại để tắt.
+
+Firmware cần xử lý các action này, dedupe theo `id` vì QoS 1 có thể gửi lại,
+và có danh sách bài để chuyển bài. Website báo **đã gửi lệnh** khi broker nhận
+lệnh; trạng thái phát thực tế được cập nhật từ status của firmware. Không tự
+gửi lệnh khi chọn thiết bị. Âm lượng khởi tạo ở 50% khi chưa nhận `volume`.
+
+Kiểm tra logic thời lượng/vị trí bằng `npm test` (Node.js 22.18+), build bằng `npm run build`.
 
 ### 0.2 ACL — giới hạn topic cho từng thiết bị
 

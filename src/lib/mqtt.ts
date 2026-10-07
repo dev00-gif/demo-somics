@@ -95,13 +95,15 @@ function createClient(): MqttClient {
     const match = topic.match(/device\/([^/]+)\/status$/);
     if (!match) return;
     const deviceId = decodeURIComponent(match[1]);
+    let status: Record<string, unknown> | undefined;
     try {
-      const msg = JSON.parse(payload.toString()) as Record<string, unknown>;
-      console.log(`[mqtt] status từ ${deviceId}: ${String(msg.state ?? "?")}`);
+      const msg: unknown = JSON.parse(payload.toString());
+      if (msg && typeof msg === "object" && !Array.isArray(msg)) status = msg as Record<string, unknown>;
+      console.log(`[mqtt] status từ ${deviceId}: ${String(status?.state ?? "?")}`);
     } catch {
       console.warn(`[mqtt] payload status không phải JSON từ ${deviceId}`);
     }
-    void touchDevice(deviceId).catch((err) =>
+    void touchDevice(deviceId, status).catch((err) =>
       console.error(`[mqtt] touch device ${deviceId} lỗi:`, err.message),
     );
   });
@@ -227,6 +229,7 @@ export interface FileAvailable {
   sha256: string;
   downloadUrl: string;
   uploadedAt: string;
+  durationSeconds?: number | null;
 }
 
 /** Gửi thông báo file đã upload xong; thiết bị dùng downloadUrl để tải file. */

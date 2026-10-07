@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import DevicePlayerControls from "@/components/device-player-controls";
+import { formatPlaybackTime, type DevicePlayback, type TrackInfo } from "@/lib/playback";
 
 interface UploadResult {
   ok: boolean;
@@ -13,6 +14,7 @@ interface UploadResult {
     size: number;
     sha256: string;
     sentTo?: string;
+    durationSeconds?: number | null;
   };
 }
 
@@ -22,6 +24,7 @@ interface DeviceItem {
   firmwareVersion: string | null;
   lastSeenAt: string | null;
   online: boolean;
+  playback?: DevicePlayback;
 }
 
 type LogKind = "info" | "success" | "error";
@@ -59,6 +62,7 @@ export default function Home() {
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [targetDevice, setTargetDevice] = useState("");
   const selectedDevice = devices.find((device) => device.deviceId === targetDevice);
+  const [uploadedTracks, setUploadedTracks] = useState<Record<string, TrackInfo>>({});
   const [newDeviceId, setNewDeviceId] = useState("");
   const [createdCode, setCreatedCode] = useState<{
     deviceId: string;
@@ -99,7 +103,7 @@ export default function Home() {
     };
   }, [addLog]);
 
-  // Nạp danh sách thiết bị lúc mount + mỗi 15s (cập nhật trạng thái online)
+  // Khi chọn thiết bị, cập nhật vị trí phát mỗi 2s; danh sách chưa chọn mỗi 15s.
   const loadDevices = useCallback(async () => {
     try {
       const res = await fetch("/api/iot/devices");
@@ -112,9 +116,9 @@ export default function Home() {
 
   useEffect(() => {
     void loadDevices();
-    const timer = setInterval(() => void loadDevices(), 15_000);
+    const timer = setInterval(() => void loadDevices(), targetDevice ? 2_000 : 15_000);
     return () => clearInterval(timer);
-  }, [loadDevices]);
+  }, [loadDevices, targetDevice]);
 
   /** Tạo thiết bị mới + mã kích hoạt */
   const handleCreateDevice = async () => {
@@ -234,6 +238,13 @@ export default function Home() {
       });
 
       setResult(data);
+      if (data.ok && data.meta) {
+        const meta = data.meta;
+        setUploadedTracks((prev) => ({ ...prev, [meta.sentTo ?? targetDevice]: {
+          fileId: meta.id, fileName: meta.fileName, durationSeconds: meta.durationSeconds ?? null,
+        } }));
+        void loadDevices();
+      }
       setProgress(100);
       addLog("success", data.message ?? "Đã đẩy file lên MQTT thành công");
     } catch (err) {
@@ -328,7 +339,13 @@ export default function Home() {
             </div>
 
             {selectedDevice?.online && selectedDevice.activatedAt && (
-              <DevicePlayerControls key={selectedDevice.deviceId} deviceId={selectedDevice.deviceId} onLog={addLog} />
+              <DevicePlayerControls
+                key={selectedDevice.deviceId}
+                deviceId={selectedDevice.deviceId}
+                playback={selectedDevice.playback}
+                uploadedTrack={uploadedTracks[selectedDevice.deviceId]}
+                onLog={addLog}
+              />
             )}
             {selectedDevice && !selectedDevice.online && (
               <p role="status" className="mb-4 text-sm text-amber-400">
@@ -384,6 +401,9 @@ export default function Home() {
                 }`}
               >
                 {result.ok ? `✅ ${result.message}` : `❌ ${result.error}`}
+                {result.ok && result.meta?.durationSeconds != null && (
+                  <p className="mt-1">Thời lượng: {formatPlaybackTime(result.meta.durationSeconds)}</p>
+                )}
               </div>
             )}
 
@@ -470,7 +490,7 @@ export default function Home() {
           <section className="rounded-2xl border border-slate-700 bg-slate-800/60 p-6 shadow-lg lg:col-span-2">
             <h2 className="mb-1 text-lg font-semibold">🔌 Thiết bị</h2>
             <p className="mb-4 text-sm text-slate-400">
-              Trạng thái cập nhật từ MQTT status topic mỗi 15s. Thiết bị online mới
+              Trạng thái cập nhật mỗi 2s khi chọn thiết bị, mỗi 15s khi chưa chọn. Thiết bị online mới
               nhận được file.
             </p>
 
