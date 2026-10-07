@@ -174,6 +174,7 @@ chạy trên browser: connect, subscribe, publish không cần cài gì.
 | `POST` | `/api/iot/devices` | JSON `{ deviceId, code? }` | **Admin** đăng ký thiết bị mới + sinh mã kích hoạt |
 | `GET` | `/api/iot/devices` | — | Danh sách thiết bị + trạng thái online |
 | `POST` | `/api/iot/devices/:id/reprovision` | JSON `{ code? }` | **Admin** cấp lại mã kích hoạt khi thiết bị mất credential (thu hồi token cũ) |
+| `POST` | `/api/iot/devices/:id/control` | JSON `{ action, volume? }` | Điều khiển âm lượng, tạm dừng/tiếp tục, bài tiếp/bài trước cho thiết bị đã kích hoạt và online |
 | `POST` | `/api/iot/activate` | JSON `{ deviceId, activationCode, firmwareVersion? }` | Thiết bị kích hoạt — trả MQTT credential (1 lần duy nhất); tự động ghi ACL per-topic |
 | `POST` | `/api/iot/token` | JSON `{ deviceId, mqttPassword, fileId? }` | Thiết bị đổi credential lấy CẶP token: accessToken TTL 10 phút + refreshToken TTL 30 ngày |
 | `POST` | `/api/iot/token/refresh` | JSON `{ deviceId, refreshToken }` | Đổi refresh token lấy cặp token mới (rotation — refresh dùng 1 lần rồi chết) |
@@ -244,7 +245,42 @@ Base topic: `station/player` (đổi qua `MQTT_TOPIC_BASE` nếu muốn).
    Không cần gửi lại mqttPassword. Refresh token hết hạn (30 ngày) hoặc bị mất
    thì quay lại bước 6 (login bằng credential).
 
-### 0.1 ACL — giới hạn topic cho từng thiết bị
+### 0.1 Điều khiển phát nhạc trên website
+
+Chọn một thiết bị đã kích hoạt và online trong **Thiết bị nhận** để hiện thanh
+điều khiển: âm lượng 0–100%, nút giảm/tăng 5%, tạm dừng/tiếp tục, bài trước và
+bài tiếp. Khi thiết bị offline, thanh điều khiển được ẩn ở lần cập nhật danh sách
+kế tiếp; API cũng kiểm tra heartbeat trong 2 phút gần nhất trước khi gửi lệnh.
+
+`POST /api/iot/devices/SOMICS-000001/control` với `{"action":"set_volume","volume":70}`
+publish lên **commandTopic riêng của thiết bị**, QoS 1, không retained:
+
+```json
+{
+  "id": "uuid",
+  "type": "control",
+  "action": "set_volume",
+  "volume": 70,
+  "sentAt": "2026-10-07T02:00:00.000Z"
+}
+```
+
+| `action` | Xử lý trong firmware |
+| --- | --- |
+| `set_volume` | Đặt âm lượng tuyệt đối theo `volume` (số nguyên 0–100) |
+| `pause` | Tạm dừng bài đang phát |
+| `resume` | Tiếp tục bài đã tạm dừng |
+| `next` | Chuyển đến bài tiếp theo trong danh sách trên thiết bị |
+| `previous` | Quay về bài trước trong danh sách trên thiết bị |
+
+Các lệnh ngoài `set_volume` không có trường `volume`. Firmware cần xử lý các
+action này, dedupe theo `id` vì QoS 1 có thể gửi lại, và có danh sách bài để
+chuyển bài. Website báo **đã gửi lệnh** khi broker nhận lệnh, chưa xác nhận
+thiết bị đã thực thi. Thanh âm lượng khởi tạo ở mức chọn 50% và nút tạm dừng/
+tiếp tục phản ánh lệnh gần nhất gửi thành công trong phiên; không tự gửi lệnh
+khi chọn thiết bị, chưa đồng bộ trạng thái phát hay âm lượng từ firmware.
+
+### 0.2 ACL — giới hạn topic cho từng thiết bị
 
 Khi kích hoạt (lần đầu hoặc re-provision), backend tự ghi ACL vào authorizer
 `built_in_database` của EMQX cho từng device user:
@@ -257,7 +293,7 @@ Nhờ vậy thiết bị A không thể nghe lệnh của thiết bị B hay gi�
 Yêu cầu: authorizer `built_in_database` phải tồn tại — backend tự tạo qua API
 (`ensureBuiltInAuthzSource`) nếu chưa có.
 
-### 0.2 Re-provision — thiết bị mất credential
+### 0.3 Re-provision — thiết bị mất credential
 
 Khi thiết bị bị mất credential (flash xóa, firmware reset...):
 

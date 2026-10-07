@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import DevicePlayerControls from "@/components/device-player-controls";
 
 interface UploadResult {
   ok: boolean;
@@ -57,6 +58,7 @@ export default function Home() {
   // Danh sách thiết bị + thiết bị được chọn để nhận file
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [targetDevice, setTargetDevice] = useState("");
+  const selectedDevice = devices.find((device) => device.deviceId === targetDevice);
   const [newDeviceId, setNewDeviceId] = useState("");
   const [createdCode, setCreatedCode] = useState<{
     deviceId: string;
@@ -301,17 +303,18 @@ export default function Home() {
 
             {/* Chọn thiết bị đích */}
             <div className="mb-4">
-              <label className="mb-1 block text-sm text-slate-400">
+              <label htmlFor="target-device" className="mb-1 block text-sm text-slate-400">
                 Thiết bị nhận <span className="text-red-400">*</span>
               </label>
               <select
+                id="target-device"
                 value={targetDevice}
                 onChange={(e) => setTargetDevice(e.target.value)}
                 className="w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-emerald-400"
               >
                 <option value="">— Chọn thiết bị —</option>
                 {devices.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId} disabled={!d.online}>
+                  <option key={d.deviceId} value={d.deviceId} disabled={!d.online || !d.activatedAt}>
                     {d.deviceId} {d.online ? "● online" : "○ offline"}
                     {d.activatedAt ? "" : " (chưa kích hoạt)"}
                   </option>
@@ -323,6 +326,15 @@ export default function Home() {
                 </p>
               )}
             </div>
+
+            {selectedDevice?.online && selectedDevice.activatedAt && (
+              <DevicePlayerControls key={selectedDevice.deviceId} deviceId={selectedDevice.deviceId} onLog={addLog} />
+            )}
+            {selectedDevice && !selectedDevice.online && (
+              <p role="status" className="mb-4 text-sm text-amber-400">
+                Thiết bị {selectedDevice.deviceId} đã mất kết nối. Thanh điều khiển sẽ hiện lại khi thiết bị online.
+              </p>
+            )}
 
             {/* Nút upload */}
             <label
