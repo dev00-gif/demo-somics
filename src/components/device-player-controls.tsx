@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  formatPlaybackTime, isDuration, playbackPosition,
+  canSeekTrack, controlTrack, formatPlaybackTime, isDuration, playbackPosition,
   type DevicePlayback, type PlayerCommand, type RepeatMode, type TrackInfo,
 } from "@/lib/playback";
 
@@ -29,6 +29,9 @@ function commandMessage(command: PlayerCommand): string {
 }
 
 export default function DevicePlayerControls({ deviceId, playback, uploadedTrack, onLog }: DevicePlayerControlsProps) {
+  const track = controlTrack(playback, uploadedTrack);
+  const trackRef = useRef(track);
+  trackRef.current = track;
   const [volume, setVolume] = useState(playback?.volume ?? 50);
   const [paused, setPaused] = useState(playback?.state === "PAUSED");
   const [repeat, setRepeat] = useState<RepeatMode>(playback?.repeat ?? "off");
@@ -41,8 +44,6 @@ export default function DevicePlayerControls({ deviceId, playback, uploadedTrack
   const pendingRef = useRef(false);
   const lastVolumeRef = useRef<number | null>(playback?.volume ?? null);
   const mountedRef = useRef(true);
-  const playbackRef = useRef(playback);
-  playbackRef.current = playback;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -69,27 +70,22 @@ export default function DevicePlayerControls({ deviceId, playback, uploadedTrack
   useEffect(() => {
     seekDraftRef.current = null;
     setSeekPreview(null);
-  }, [playback?.fileId]);
+  }, [track?.fileId]);
 
   useEffect(() => {
     setClock(Date.now());
-    setSeekOverride((current) => current && current.fileId === playback?.fileId
-      && Date.parse(playback.positionUpdatedAt) < current.updatedAt ? current : null);
-  }, [playback?.fileId, playback?.positionUpdatedAt]);
-
-  const track = playback?.fileId ? {
-    fileId: playback.fileId,
-    fileName: playback.fileName ?? (uploadedTrack?.fileId === playback.fileId ? uploadedTrack.fileName : "Bài đang phát"),
-    durationSeconds: playback.durationSeconds,
-  } : uploadedTrack;
+    setSeekOverride((current) => current && current.fileId === track?.fileId
+      && (playback?.fileId !== current.fileId || Date.parse(playback.positionUpdatedAt) < current.updatedAt) ? current : null);
+  }, [track?.fileId, playback?.fileId, playback?.positionUpdatedAt]);
   const duration = track?.durationSeconds ?? null;
   const activeTrack = playback?.fileId === track?.fileId && ["PLAYING", "PAUSED"].includes(playback?.state ?? "");
-  const canSeek = !!track && activeTrack && isDuration(duration);
+  const canSeek = canSeekTrack(playback, track);
   const positionPlayback = playback && seekOverride?.fileId === playback.fileId
     ? { ...playback, positionSeconds: seekOverride.positionSeconds, positionUpdatedAt: new Date(seekOverride.updatedAt).toISOString() }
     : playback;
   const position = seekPreview?.fileId === track?.fileId ? seekPreview?.positionSeconds ?? 0
-    : positionPlayback?.fileId === track?.fileId && positionPlayback ? playbackPosition(positionPlayback, clock) : 0;
+    : positionPlayback?.fileId === track?.fileId && positionPlayback ? playbackPosition(positionPlayback, clock)
+    : seekOverride?.fileId === track?.fileId ? seekOverride?.positionSeconds ?? 0 : 0;
 
   const clearSeekPreview = () => {
     seekDraftRef.current = null;
@@ -121,7 +117,7 @@ export default function DevicePlayerControls({ deviceId, playback, uploadedTrack
         if (command.action === "resume") setPaused(false);
         if (command.action === "set_repeat") setRepeat(command.repeat);
         if (command.action === "seek") {
-          if (playbackRef.current?.fileId === command.fileId) {
+          if (trackRef.current?.fileId === command.fileId) {
             const updatedAt = Date.now();
             setSeekOverride({ fileId: command.fileId, positionSeconds: command.positionSeconds, updatedAt });
             setClock(updatedAt);
@@ -147,7 +143,7 @@ export default function DevicePlayerControls({ deviceId, playback, uploadedTrack
   const commitSeek = () => {
     const draft = seekDraftRef.current;
     if (!draft || pendingRef.current) return;
-    if (draft.fileId !== playbackRef.current?.fileId) { clearSeekPreview(); return; }
+    if (draft.fileId !== trackRef.current?.fileId) { clearSeekPreview(); return; }
     void sendControl({ action: "seek", ...draft });
   };
 
@@ -173,7 +169,7 @@ export default function DevicePlayerControls({ deviceId, playback, uploadedTrack
           <p className="mt-1 text-xs text-slate-400">
             {activeTrack ? playback?.state === "PAUSED" ? "Đã tạm dừng" : "Đang phát"
               : playback?.state === "DONE" && playback.fileId ? "Đã kết thúc"
-              : track ? "Đang chờ thiết bị phát file" : "Gửi file nhạc để bắt đầu"}
+              : track ? "File đã gửi tới thiết bị" : "Gửi file nhạc để bắt đầu"}
           </p>
         </div>
         <button type="button" aria-label="Lặp lại bài hiện tại" aria-pressed={repeat === "one"}
@@ -205,7 +201,7 @@ export default function DevicePlayerControls({ deviceId, playback, uploadedTrack
           <span aria-label="Tổng thời lượng">{formatPlaybackTime(duration)}</span>
         </div>
         {canSeek ? <p className="mt-1 text-xs text-slate-500">Kéo thanh để tua đến đoạn muốn nghe.</p>
-          : track && <p className="mt-1 text-xs text-slate-500">{isDuration(duration) ? "Thanh tua sẽ sẵn sàng khi thiết bị báo đang phát." : "Đang chờ thời lượng từ thiết bị."}</p>}
+          : track && <p className="mt-1 text-xs text-slate-500">{isDuration(duration) ? "Bài đã kết thúc hoặc đang lỗi." : "Chưa xác định được thời lượng của file."}</p>}
       </div>
 
       <div className="grid grid-cols-3 gap-2">

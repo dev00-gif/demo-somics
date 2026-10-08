@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getDevice, ONLINE_WINDOW_MS } from "@/lib/devices";
 import { publishDeviceCommand } from "@/lib/mqtt";
-import { isDuration, isFileId } from "@/lib/playback";
+import { readUploadedTrack } from "@/lib/audio-files";
+import { canSeekTrack, controlTrack, isFileId } from "@/lib/playback";
 
 export const runtime = "nodejs";
 
@@ -53,10 +54,16 @@ export async function POST(
     }
     if (action === "seek") {
       const playback = device.playback;
-      if (!playback || playback.fileId !== fileId || !["PLAYING", "PAUSED"].includes(playback.state) || !isDuration(playback.durationSeconds)) {
+      if (playback?.fileId && playback.fileId !== fileId) {
+        return NextResponse.json({ ok: false, error: "Bài đang phát đã đổi. Vui lòng thử lại." }, { status: 409 });
+      }
+      // Firmware cũ chỉ gửi heartbeat: kiểm tra file/thời lượng đã lưu của đúng thiết bị.
+      const uploadedTrack = await readUploadedTrack(fileId as string, deviceId);
+      const track = controlTrack(playback, uploadedTrack ?? undefined);
+      if (!canSeekTrack(playback, track)) {
         return NextResponse.json({ ok: false, error: "Bài đang phát đã đổi hoặc chưa có thời lượng để tua. Vui lòng thử lại." }, { status: 409 });
       }
-      if ((positionSeconds as number) > playback.durationSeconds) {
+      if ((positionSeconds as number) > track!.durationSeconds!) {
         return NextResponse.json({ ok: false, error: "Vị trí tua vượt quá thời lượng bài" }, { status: 400 });
       }
     }

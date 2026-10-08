@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { mergePlaybackStatus, playbackPosition, formatPlaybackTime } = require("../src/lib/playback.ts");
+const { canSeekTrack, controlTrack, mergePlaybackStatus, playbackPosition, formatPlaybackTime } = require("../src/lib/playback.ts");
 
 const time = Date.parse("2026-10-07T02:00:00Z");
 const fileId = "11111111-1111-4111-8111-111111111111";
@@ -73,4 +73,30 @@ test("formats zero, fractional, unknown and long durations", () => {
   assert.equal(formatPlaybackTime(125.9), "2:05");
   assert.equal(formatPlaybackTime(3605), "60:05");
   assert.equal(formatPlaybackTime(null), "--:--");
+});
+
+test("uploaded file with known duration is seekable before playback status arrives", () => {
+  assert.equal(canSeekTrack(undefined, controlTrack(undefined, track)), true);
+  const heartbeat = mergePlaybackStatus(undefined, { state: "IDLE" }, null, time);
+  assert.equal(canSeekTrack(heartbeat, controlTrack(heartbeat, track)), true);
+  const playingWithoutFile = mergePlaybackStatus(undefined, { state: "PLAYING" }, null, time);
+  assert.equal(canSeekTrack(playingWithoutFile, controlTrack(playingWithoutFile, track)), true);
+});
+
+test("downloaded file can be sought and missing reported duration uses the same uploaded file", () => {
+  const downloaded = mergePlaybackStatus(undefined, { state: "DOWNLOADED", fileId }, null, time);
+  const selected = controlTrack(downloaded, track);
+  assert.equal(selected.durationSeconds, 120);
+  assert.equal(canSeekTrack(downloaded, selected), true);
+});
+
+test("seek cannot use another uploaded track's duration or an ended file", () => {
+  const different = { fileId: nextFileId, fileName: "next.wav", durationSeconds: 10 };
+  const selected = controlTrack(playing(), different);
+  assert.equal(selected.fileId, fileId);
+  assert.equal(selected.durationSeconds, 120);
+  assert.equal(canSeekTrack(playing(), different), false);
+  assert.equal(canSeekTrack(undefined, { ...track, durationSeconds: null }), false);
+  assert.equal(canSeekTrack({ ...playing(), state: "DONE" }, track), false);
+  assert.equal(canSeekTrack({ ...playing(), state: "ERROR" }, track), false);
 });

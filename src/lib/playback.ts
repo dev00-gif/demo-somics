@@ -32,6 +32,23 @@ export function isDuration(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
+/** Prefer the reported file; legacy firmware can still control the file just uploaded. */
+export function controlTrack(playback?: DevicePlayback, uploadedTrack?: TrackInfo): TrackInfo | undefined {
+  if (!playback?.fileId) return uploadedTrack;
+  const matchingUpload = uploadedTrack?.fileId === playback.fileId ? uploadedTrack : undefined;
+  return {
+    fileId: playback.fileId,
+    fileName: playback.fileName ?? matchingUpload?.fileName ?? "Bài đang phát",
+    durationSeconds: isDuration(playback.durationSeconds) ? playback.durationSeconds : matchingUpload?.durationSeconds ?? null,
+  };
+}
+
+export function canSeekTrack(playback: DevicePlayback | undefined, track: TrackInfo | undefined): boolean {
+  if (!track || !isFileId(track.fileId) || !isDuration(track.durationSeconds)) return false;
+  if (playback?.fileId && playback.fileId !== track.fileId) return false;
+  return playback?.state !== "DONE" && playback?.state !== "ERROR";
+}
+
 export function formatPlaybackTime(seconds: number | null): string {
   if (seconds === null || !Number.isFinite(seconds)) return "--:--";
   const total = Math.max(0, Math.floor(seconds));

@@ -278,8 +278,10 @@ publish lên **commandTopic riêng của thiết bị**, QoS 1, không retained:
 
 Ví dụ body lặp lại: `{"action":"set_repeat","repeat":"one"}`.
 Ví dụ body tua: `{"action":"seek","fileId":"<uuid bài đang phát>","positionSeconds":75.5}`.
-BE kiểm tra file đang phát, trạng thái `PLAYING`/`PAUSED` và giới hạn thời lượng
-trước khi publish; firmware cũng phải kiểm tra `fileId` còn khớp bài hiện tại
+BE kiểm tra file đang phát (nếu thiết bị có báo) và giới hạn thời lượng trước
+khi publish. Với firmware chỉ gửi heartbeat, BE lấy thời lượng từ metadata
+file đã upload cho đúng thiết bị và vẫn cho phép tua, không bắt buộc nhận
+`PLAYING`/`PAUSED` trước. Firmware cũng phải kiểm tra `fileId` còn khớp bài hiện tại
 khi nhận lệnh để không tua nhầm bài sau khi chuyển bài.
 
 BE đọc thời lượng bằng `music-metadata` khi upload, lưu `durationSeconds` vào
@@ -314,8 +316,11 @@ thiết bị. File cũ chưa có metadata thời lượng cần firmware báo `d
 Website cập nhật trạng thái mỗi 2 giây khi chọn thiết bị, nội suy vị trí giữa
 các status chỉ khi `PLAYING`, dừng đồng hồ khi `PAUSED` và không vượt tổng
 thời lượng. Kéo thanh xem trước vị trí; thả chuột/chạm hoặc dùng phím điều hướng
-để gửi một lệnh tua. Thanh tua bị vô hiệu hóa khi chưa biết bài/thời lượng hoặc
-khi bài đã kết thúc. Nút lặp lại sáng khi bật và có thể bấm lại để tắt.
+để gửi một lệnh tua. Khi biết file/thời lượng, thanh tua sử dụng được ngay cả
+khi chưa nhận trạng thái phát. Thanh bị vô hiệu hóa khi chưa biết bài/thời lượng
+hoặc thiết bị báo bài đã kết thúc/đang lỗi. Khi firmware chưa báo vị trí, thanh
+giữ mốc tua vừa gửi và không tự giả lập thời gian đang phát. Nút lặp lại sáng
+khi bật và có thể bấm lại để tắt.
 
 Firmware cần xử lý các action này, dedupe theo `id` vì QoS 1 có thể gửi lại,
 và có danh sách bài để chuyển bài. Website báo **đã gửi lệnh** khi broker nhận
