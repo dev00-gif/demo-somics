@@ -48,7 +48,7 @@ services:
       # ===== MQTT TLS (8883) — TẮT MẶC ĐỊNH =====================================
       # Muốn bật: (1) chạy cd deploy/emqx/certs && ./gen-certs.sh <domain/IP>,
       # (2) commit ca.crt/server.crt/server.key vào repo (hoặc đưa lên VPS bằng tay),
-      # (3) uncomment các dòng SSL bên dưới + port 8883 + 3 dòng mount cert.
+      # (3) uncomment các dòng SSL bên dưới + mapping 8884:8883 + 3 dòng mount cert.
       # Hướng dẫn đầy đủ: deploy/emqx/README.md mục 8.
       # EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
       # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /opt/emqx/etc/certs/ca.crt
@@ -59,8 +59,8 @@ services:
     ports:
       - "${MQTT_TCP_BIND:-0.0.0.0}:1883:1883"      # MQTT TCP (nội mạng tin cậy)
       - "${MQTT_WS_BIND:-0.0.0.0}:8083:8083"       # MQTT WebSocket — cho MQTTX Web client
-      # - "${MQTT_TLS_BIND:-0.0.0.0}:8883:8883"    # bật khi có chứng chỉ TLS
-      - "${DASHBOARD_BIND:-127.0.0.1}:18083:18083" # Dashboard — chỉ localhost mặc định
+      # - "${MQTT_TLS_BIND:-0.0.0.0}:${MQTT_TLS_PORT:-8884}:8883" # broker demo TLS; somics-mqtt dùng 8883
+      - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-18084}:18083" # somics-mqtt dùng host port 18083
     volumes:
       - emqx_data:/opt/emqx/data
       - emqx_log:/opt/emqx/log
@@ -80,7 +80,9 @@ services:
         limits:
           memory: ${EMQX_MEM_LIMIT:-1g}
     networks:
-      - mqtt-net
+      mqtt-net:
+        aliases:
+          - demo-somics-broker
 
   # ──────────────────────────────────────────────────────────────────────────────
   # App Next.js (FE uploader + BE API routes) — build từ Dockerfile root
@@ -93,10 +95,12 @@ services:
     depends_on:
       emqx:
         condition: service_healthy   # chờ broker healthy mới start app
+      emqx-init:
+        condition: service_completed_successfully # chờ credential được đồng bộ
     environment:
       NODE_ENV: production
       # App gọi broker qua mạng nội bộ Docker — KHÔNG đi ra internet
-      MQTT_URL: mqtt://emqx:1883
+      MQTT_URL: mqtt://demo-somics-broker:1883
       # App đăng nhập broker — password được đồng bộ qua service emqx-init
       # (nó tạo/cập nhật user web-backend từ biến MQTT_APP_PASSWORD).
       MQTT_USERNAME: ${MQTT_APP_USERNAME:-web-backend}
@@ -107,13 +111,13 @@ services:
       # Nếu bỏ trống, app tự suy ra từ Host/x-forwarded-* của request upload.
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
       # ===== Kích hoạt thiết bị — backend cấp user MQTT qua EMQX API =====
-      EMQX_API_URL: http://emqx:18083
+      EMQX_API_URL: http://demo-somics-broker:18083
       EMQX_DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-admin}
       EMQX_DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
-      # Thông tin MQTT public trả cho thiết bị lúc activate (TLS 8883)
+      # Khớp listener demo: TCP 1883 mặc định. Khi bật TLS riêng, đặt port 8884/TLS=true.
       MQTT_PUBLIC_HOST: ${MQTT_PUBLIC_HOST:-}
-      MQTT_PUBLIC_PORT: ${MQTT_PUBLIC_PORT:-8883}
-      MQTT_PUBLIC_TLS: ${MQTT_PUBLIC_TLS:-true}
+      MQTT_PUBLIC_PORT: ${MQTT_PUBLIC_PORT:-1883}
+      MQTT_PUBLIC_TLS: ${MQTT_PUBLIC_TLS:-false}
     # KHÔNG publish port app ra host khi chạy trên Dokploy — port 3000 đã bị
     # Dashboard Dokploy chiếm. Truy cập app qua Dokploy → Domains (Traefik →
     # container qua dokploy-network). Chạy compose ngoài Dokploy thì thêm lại:
@@ -145,6 +149,7 @@ services:
       emqx:
         condition: service_healthy
     environment:
+      EMQX_API_URL: http://demo-somics-broker:18083
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-admin}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
       MQTT_APP_USERNAME: ${MQTT_APP_USERNAME:-web-backend}

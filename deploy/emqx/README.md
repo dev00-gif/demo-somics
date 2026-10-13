@@ -17,12 +17,12 @@
 | `EMQX_AUTHENTICATION__1__*` | `password_based` + `built_in_database` | Khai báo authenticator ngay khi boot. **Trong EMQX 5/6, chỉ cần có ≥1 authenticator là mọi kết nối không mang username/password bị từ chối** → đây chính là cách tắt anonymous access (không còn biến `EMQX_ALLOW_ANONYMOUS` như v4). |
 | `EMQX_AUTHENTICATION__1__*` | `password_based` + `built_in_database` | Khai báo authenticator khi boot — mọi kết nối không có username/password bị từ chối (tắt anonymous). User được service `emqx-init` nạp qua API sau khi broker lên. |
 | `ports: 1883` | `${MQTT_TCP_BIND:-0.0.0.0}:1883:1883` | MQTT TCP cho FE/BE và thiết bị nhúng. Bind ra mọi IP nhưng nên giới hạn bằng firewall. |
-| `ports: 18083` | `${DASHBOARD_BIND:-127.0.0.1}:18083:18083` | Dashboard. **Mặc định chỉ bind localhost** → không lộ public; truy cập qua SSH tunnel hoặc gắn domain HTTPS qua Dokploy (mục 7). |
+| `ports: 18084` | `${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-18084}:18083` | Dashboard demo, khác host port 18083 của somics-mqtt. **Mặc định chỉ bind localhost**; truy cập qua SSH tunnel hoặc domain HTTPS (container port 18083). |
 | `volumes` | `emqx_data`, `emqx_log` | Named volume do Docker quản lý: user MQTT, cấu hình, retained messages, log, crash dump sống sót qua restart/redeploy. |
 | `healthcheck` | `emqx ctl status` mỗi 30s | Nếu broker treo, container chuyển `unhealthy` → orchestration restart. |
 | `restart: unless-stopped` | — | Tự bật lại khi VPS reboot hoặc container crash; trừ khi bạn chủ động `docker stop`. |
 | `deploy.resources.limits.memory` | 1g | Chặn broker ăn hết RAM VPS (cần Docker Compose v2 — Dokploy dùng sẵn). |
-| `networks: dokploy-network (external)` | — | Join mạng overlay Dokploy tạo sẵn: BE Next.js chạy trong Dokploy gọi thẳng `mqtt://emqx:1883` nội bộ, và Dashboard có thể gắn domain/HTTPS qua Dokploy. |
+| `networks: dokploy-network (external)` | alias `demo-somics-broker` | App deploy riêng gọi `mqtt://demo-somics-broker:1883` nội bộ. Full stack root dùng alias này trên mạng `mqtt-net` riêng. |
 
 ## 2. Biến môi trường
 
@@ -88,8 +88,8 @@ docker exec -t emqx curl -s http://localhost:18083/status
 ### 4.2 SSH tunnel để mở Dashboard trên máy local
 
 ```bash
-ssh -L 18083:127.0.0.1:18083 user@<VPS_IP>
-# Giữ terminal này, mở browser: http://localhost:18083
+ssh -L 18084:127.0.0.1:18084 user@<VPS_IP>
+# Giữ terminal này, mở browser: http://localhost:18084
 ```
 
 ### 4.3 Test publish/subscribe
@@ -132,7 +132,7 @@ Project Next.js này đã có sẵn `src/lib/mqtt.ts` dùng thư viện `mqtt`. 
 
 - **BE chạy trong Dokploy (khuyến nghị)** — cùng `dokploy-network` với EMQX:
   ```bash
-  MQTT_URL=mqtt://emqx:1883          # alias "mqtt" đặt trong compose
+  MQTT_URL=mqtt://demo-somics-broker:1883
   MQTT_USERNAME=web-backend
   MQTT_PASSWORD=<mật khẩu web-backend>
   MQTT_TOPIC_BASE=station/player
@@ -162,7 +162,8 @@ Với user ngoài danh sách bootstrap hoặc ACL chi tiết, quản lý qua Das
 Thay vì SSH tunnel, có thể expose Dashboard an toàn qua reverse proxy của Dokploy:
 
 1. Trỏ DNS: tạo bản ghi `A` — vd `mqtt-dashboard.yourdomain.com` → `<VPS_IP>`.
-2. Trong compose, đổi `DASHBOARD_BIND=0.0.0.0` (hoặc bỏ bind) để port 18083 lắng nghe trên host — **chỉ làm bước này khi đi qua Dokploy domain**, vì vẫn bị public ở mức host; reverse proxy của Dokploy (Traefik/Caddy) sẽ handle HTTPS.
+2. Giữ `DASHBOARD_BIND=127.0.0.1`; Traefik cùng Docker network truy cập container
+   port `18083` trực tiếp, không cần mở host port `18084` ra public.
 3. Dokploy UI → service **emqx-broker** → tab **Domains** → **Add Domain**:
    - Domain: `mqtt-dashboard.yourdomain.com`
    - Port: `18083`
@@ -175,7 +176,11 @@ Thay vì SSH tunnel, có thể expose Dashboard an toàn qua reverse proxy của
 
 ## 8. MQTT TLS — port 8883 (khuyến nghị cho thiết bị nhúng)
 
-Thiết bị nhúng kết nối qua Internet nên đi qua `mqtts://<VPS>:8883` (TLS encrypt) thay vì `mqtt://:1883` (plain text — chỉ dùng trong mạng tin cậy hoặc nội bộ).
+Listener TLS trong container là `8883`. Broker demo publish ra host port **8884**
+(`MQTT_TLS_PORT=8884`) để giữ riêng với TLS `8883` của `somics-mqtt` trên cùng VPS.
+Thiết bị demo kết nối `mqtts://<domain-demo>:8884`; sau khi bật TLS, đặt
+`MQTT_PUBLIC_PORT=8884`, `MQTT_PUBLIC_TLS=true` và `MQTT_PUBLIC_HOST` đúng domain
+trên chứng chỉ. TCP `1883` dùng trong mạng tin cậy hoặc nội bộ.
 
 ### 8.1 Tạo chứng chỉ
 
@@ -197,20 +202,20 @@ Cert có SAN đúng domain/IP nên client không cần `--insecure`. Thư mục 
 ### 8.2 Compose đã bật sẵn gì
 
 - Listener `ssl.default` bind `0.0.0.0:8883`, trỏ tới 3 file cert mount vào `/opt/emqx/etc/certs/`
-- Port publish `${MQTT_TLS_BIND:-0.0.0.0}:8883:8883` (điều khiển bằng biến `MQTT_TLS_BIND`)
+- Port publish `${MQTT_TLS_BIND:-0.0.0.0}:${MQTT_TLS_PORT:-8884}:8883`
 - One-way TLS: client xác thực bằng username/password (authenticator built-in database vẫn áp dụng cho 8883)
 
 ### 8.3 Test TLS
 
 ```bash
 # MQTTX CLI
-mqttx sub -h <VPS> -p 8883 --protocol mqtts --ca ca.crt -u device-01 -P '***' -t 'test'
+mqttx sub -h <VPS> -p 8884 --protocol mqtts --ca ca.crt -u device-01 -P '***' -t 'test'
 
 # mosquitto
-mosquitto_sub -h <VPS> -p 8883 --cafile ca.crt -u device-01 -P '***' -t test -V mqttv5
+mosquitto_sub -h <VPS> -p 8884 --cafile ca.crt -u device-01 -P '***' -t test -V mqttv5
 
 # Kiểm tra handshake thô
-openssl s_client -connect <VPS>:8883 -CAfile ca.crt < /dev/null | head -20
+openssl s_client -connect <VPS>:8884 -CAfile ca.crt < /dev/null | head -20
 ```
 
 MQTTX GUI: bật TLS/SSL trong Connection settings → CA file chọn `ca.crt`.
@@ -219,10 +224,10 @@ MQTTX GUI: bật TLS/SSL trong Connection settings → CA file chọn `ca.crt`.
 
 ```bash
 sudo ufw deny 1883/tcp          # hoặc: ufw allow from <IP_tin_cậy> to any port 1883
-sudo ufw allow 8883/tcp
+sudo ufw allow 8884/tcp
 ```
 
-App BE trong Dokploy vẫn nối `mqtt://emqx:1883` bình thường — traffic nội bộ docker network không qua firewall host.
+App BE trong Dokploy vẫn nối `mqtt://demo-somics-broker:1883` bình thường — traffic nội bộ docker network không qua firewall host.
 
 ### 8.5 Nâng lên mTLS (tùy chọn)
 
@@ -238,12 +243,12 @@ Và ký client cert cho từng thiết bị (dùng `ca.key` tạo client cert, t
 ### 8.6 BE Next.js dùng TLS (nếu BE nằm ngoài docker network)
 
 ```bash
-MQTT_URL=mqtts://<VPS>:8883
+MQTT_URL=mqtts://<domain-demo>:8884
 MQTT_USERNAME=web-backend
 MQTT_PASSWORD=***
 ```
 
-Với self-signed CA, thêm vào `src/lib/mqtt.ts` options: `ca: fs.readFileSync("ca.crt")` (hoặc `rejectUnauthorized: false` — không khuyến nghị). BE trong docker network giữ nguyên `mqtt://emqx:1883`.
+Với self-signed CA, thêm vào `src/lib/mqtt.ts` options: `ca: fs.readFileSync("ca.crt")`. BE trong docker network giữ nguyên `mqtt://demo-somics-broker:1883`.
 
 ## 9. Troubleshooting
 
@@ -255,7 +260,7 @@ Với self-signed CA, thêm vào `src/lib/mqtt.ts` options: `ca: fs.readFileSync
 | Container `unhealthy` liên tục | Xem `docker logs emqx`. Thường do RAM thiếu (tăng `EMQX_MEM_LIMIT`) hoặc cookie/node name xung đột. |
 | Quên mật khẩu Dashboard | `docker exec -it emqx emqx ctl admins passwd <user> '<new-password>'` (hoặc xóa volume + deploy lại, mất toàn bộ user MQTT). |
 | Port 1883 không nối từ ngoài | `sudo ufw status` — chưa mở port, hoặc `MQTT_TCP_BIND=127.0.0.1`. |
-| TLS 8883 handshake fail (`certificate verify failed`) | Client chưa có `ca.crt` hoặc sai file — client phải dùng đúng CA đã ký server cert. |
+| TLS demo 8884 handshake fail (`certificate verify failed`) | Client chưa có `ca.crt` hoặc sai file — client phải dùng đúng CA đã ký server cert. |
 | TLS lỗi `Hostname/IP does not match certificate` | Cert tạo thiếu SAN — chạy lại `./gen-certs.sh <đúng domain/IP client dùng>`. |
 | Broker không start sau khi thêm TLS | `docker logs emqx` — thường do thiếu file cert (chưa chạy gen-certs.sh) hoặc key có passphrase. |
 

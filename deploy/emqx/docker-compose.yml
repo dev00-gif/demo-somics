@@ -53,7 +53,7 @@ services:
       # ===== Listener MQTT TLS (port 8883) — TẮT MẶC ĐỊNH =======================
       # File cert KHÔNG nằm trong repo (gitignore key) → bật TLS khi đã tạo cert:
       #   (1) ./certs/gen-certs.sh <domain/IP>  (2) đưa cert lên VPS/repo
-      #   (3) uncomment khối SSL + port 8883 + 3 dòng mount cert bên dưới.
+      #   (3) uncomment khối SSL + mapping 8884:8883 + 3 dòng mount cert bên dưới.
       # Hướng dẫn: README.md mục 8.
       # EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
       # EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /opt/emqx/etc/certs/ca.crt
@@ -72,8 +72,8 @@ services:
     # host — chỉ cần join mạng "dokploy-network" (đã cấu hình bên dưới).
     ports:
       - "${MQTT_TCP_BIND:-0.0.0.0}:1883:1883"
-      # - "${MQTT_TLS_BIND:-0.0.0.0}:8883:8883"   # bật khi có chứng chỉ TLS
-      - "${DASHBOARD_BIND:-127.0.0.1}:18083:18083"
+      # - "${MQTT_TLS_BIND:-0.0.0.0}:${MQTT_TLS_PORT:-8884}:8883" # TLS riêng cho demo
+      - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-18084}:18083"
 
     # ----- Volume (chống mất dữ liệu khi restart/redeploy) ---------------------
     volumes:
@@ -109,9 +109,9 @@ services:
 
     networks:
       dokploy-network:
-        # Alias để các service khác trong cùng mạng gọi: mqtt://emqx:1883
+        # Alias riêng để tránh hostname emqx/mqtt trỏ nhầm broker trên mạng chung.
         aliases:
-          - mqtt
+          - demo-somics-broker
 
 # ==============================================================================
 # NETWORK

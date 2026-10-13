@@ -18,7 +18,9 @@
 # ==============================================================================
 set -eu
 
-HOST="http://emqx:18083"
+HOST="${EMQX_API_URL:-http://emqx:18083}"
+HOST="${HOST%/}"
+HOST="${HOST%/api/v5}"
 API="$HOST/api/v5"
 DASH_USER="${DASHBOARD_USERNAME:-admin}"
 DASH_PASS="${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD}"

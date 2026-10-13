@@ -6,8 +6,31 @@ App gồm FE (nút upload + form bản tin) và BE (API routes `/api/upload`, `/
 
 > **Chạy thử full stack ngoài Dokploy?** Dùng `docker-compose.yml` ở root repo:
 > sửa mật khẩu trong `.env` (template có sẵn ở root) rồi `docker compose up -d --build` —
-> gộp cả EMQX + app trên 1 mạng bridge, app gọi `mqtt://emqx:1883` nội bộ, chờ broker
-> healthy trước khi start.
+> gộp cả EMQX + app trên 1 mạng bridge, app gọi `mqtt://demo-somics-broker:1883` nội bộ,
+> chờ broker healthy và `emqx-init` cấp user thành công trước khi start.
+
+## Broker riêng khi chạy cùng somics-mqtt
+
+`demo-somics` giữ broker, database user và volume riêng. `somics-mqtt` dùng mạng
+`htttn-mqtt-backend`, alias `htttn-mqtt-broker`, TLS public `8883` và Dashboard host
+`18083`. Demo dùng alias `demo-somics-broker`, TCP public `1883` và Dashboard host
+`18084`. Nếu bật TLS demo, publish host port `8884` vào listener container `8883`,
+đặt `MQTT_PUBLIC_PORT=8884`, `MQTT_PUBLIC_TLS=true` và chứng chỉ khớp domain demo.
+
+Không trỏ app demo tới alias/domain của `somics-mqtt`: broker đó dùng credential
+và ACL `htttn/devices/...`, còn demo dùng `station/player/device/...`.
+Đặt `MQTT_PUBLIC_HOST` thành IP/domain của broker demo trước khi kích hoạt thiết bị.
+Compose mặc định trả TCP `1883`, TLS `false`, khớp listener demo đang bật.
+
+Dev chạy bằng npm cần `MQTT_URL=mqtt://<VPS_IP>:1883` trong `.env.local`; app có thể
+dùng `MQTT_APP_USERNAME`/`MQTT_APP_PASSWORD` có sẵn trong `.env` nếu chưa đặt
+`MQTT_USERNAME`/`MQTT_PASSWORD`. Management API demo dùng SSH tunnel sau redeploy:
+
+```bash
+ssh -L 18084:127.0.0.1:18084 user@<VPS_IP>
+```
+
+Sau đó đặt `EMQX_API_URL=http://127.0.0.1:18084` trong `.env.local` để cấp credential.
 
 ## 1. Cách image hoạt động
 
@@ -31,7 +54,7 @@ Build-time chỉ dùng biến placeholder cho `MQTT_*` (Next.js inlines env lúc
 
    **Cách A — BE chạy cùng Dokploy với EMQX (khuyến nghị):**
    ```bash
-   MQTT_URL=mqtt://emqx:1883
+   MQTT_URL=mqtt://demo-somics-broker:1883
    MQTT_USERNAME=web-backend
    MQTT_PASSWORD=<giá trị MQTT_APP_PASSWORD — đồng bộ qua service emqx-init>
    MQTT_TOPIC_BASE=station/player
@@ -42,14 +65,17 @@ Build-time chỉ dùng biến placeholder cho `MQTT_*` (Next.js inlines env lúc
 
    **Cách B — EMQX chạy nơi khác:** `MQTT_URL=mqtt://<VPS_IP>:1883` và mở port 1883 + firewall.
 
-5. **Quan trọng — nối mạng với EMQX**: service app phải ở cùng mạng `dokploy-network` với EMQX thì mới resolve được hostname `emqx`.
-   - Nếu cả 2 tạo trong **cùng project Dokploy**: mặc định Dokploy đã cho các service trong cùng project thấy nhau qua `dokploy-network` — hostname là **service name** của EMQX trong Dokploy (vd nếu service tên `emqx-broker` thì URL là `mqtt://emqx-broker:1883` — tên service Dokploy, KHÔNG phải alias `mqtt` trong compose, vì alias chỉ hiệu lực với container network nội bộ compose).
-   - Nếu tạo ở **khác project**: vào service app → **Advanced → Networks** → thêm `dokploy-network` (Dokploy tạo sẵn và share toàn cục).
+5. **Nối mạng với EMQX**: full stack root đã nối app và broker trên `mqtt-net` riêng.
+   Nếu deploy app và `deploy/emqx/docker-compose.yml` riêng, cả hai phải cùng
+   `dokploy-network`; alias `demo-somics-broker` được khai báo trên mạng đó. Alias
+   chỉ resolve trên network nơi nó được khai báo, không phụ thuộc tên project.
    - Mẹo kiểm tra: SSH vào VPS chạy
      ```bash
-     docker exec -it <container-app> sh -c "node -e \"require('net').createConnection(1883,'emqx').on('connect',()=>{console.log('OK');process.exit(0)})\""
+     docker exec -it <container-app> sh -c "node -e \"require('net').createConnection(1883,'demo-somics-broker').on('connect',()=>{console.log('OK');process.exit(0)})\""
      ```
-     (thay `emqx` bằng tên service thực tế). Hoặc đơn giản hơn — bấm **Deploy** rồi xem log `/api/broker-status` trả về gì.
+     Hoặc gọi `/api/broker-status?init=1`: `broker` cho biết endpoint app dùng;
+     `error` phân biệt lỗi DNS, credential và timeout. Client ID có UUID để các
+     container cùng PID không ngắt kết nối nhau.
 6. Tab **Domains** → **Add Domain**:
    - Domain: `mqtt-station.yourdomain.com` (DNS A record → VPS).
    - Port: `3000`, HTTPS: **Let's Encrypt**.

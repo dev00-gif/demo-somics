@@ -14,7 +14,7 @@ Tài liệu bàn giao cho bên IoT: [Hướng dẫn kết nối thiết bị IoT
 │   FE    │ ───────────────▶ │ BE (Next)│ ───────────────────▶ │ MQTT Broker  │
 │ (web UI)│                  │ API route│                      │   (EMQX)     │
 └─────────┘                  └──────────┘                      └──────┬───────┘
-                                                                      │ mqtts://:8883
+                                                                      │ mqtts://:8884
                                                                       ▼
                                                                ┌──────────────┐
                                                                │ Thiết bị nhúng│
@@ -45,9 +45,9 @@ flowchart TD
         J1 --> K1["Backend tạo MQTT Credential<br/>username = deviceId<br/>password random"]
         K1 --> L1["Backend đăng ký credential<br/>với EMQX qua Management API"]
         L1 --> M1[Đánh dấu activationCode = USED]
-        M1 --> N1["Backend trả về IoT<br/>mqttHost / mqttPort:8883 / username / password"]
+        M1 --> N1["Backend trả về IoT<br/>mqttHost / mqttPort:8884 / username / password"]
         N1 --> O1[IoT lưu MQTT Credential]
-        O1 --> P1["IoT kết nối MQTT qua TLS<br/>mqtts://host:8883"]
+        O1 --> P1["IoT kết nối MQTT qua TLS<br/>mqtts://host:8884"]
         P1 --> Q1[MQTT CONNECT<br/>username + password]
         Q1 --> R1{EMQX xác thực thành công?}
         R1 -- Không --> Y1[Từ chối kết nối MQTT]
@@ -114,7 +114,12 @@ service `emqx-init` tự gọi EMQX API tạo/cập nhật user từ `MQTT_APP_P
 > - Chạy ngoài Dokploy (VPS thuần): uncomment dòng ports 3000 trong compose và xóa
 >   `dokploy-network` nếu chưa có.
 
-→ App: `http://localhost:3000` · Dashboard EMQX: `ssh -L 18083:127.0.0.1:18083 <vps>` rồi mở `http://localhost:18083`
+→ App: `http://localhost:3000` · Dashboard demo: `ssh -L 18084:127.0.0.1:18084 <vps>` rồi mở `http://localhost:18084`
+
+Broker demo độc lập với `somics-mqtt`: app gọi alias `demo-somics-broker` trên mạng
+riêng, TCP public `1883`, Dashboard host `18084`. TLS demo chưa bật mặc định; khi
+bật dùng host port `8884` để tránh TLS `8883` của `somics-mqtt`. Cấu hình
+`MQTT_PUBLIC_HOST` trước khi kích hoạt thiết bị. Xem [cấu hình broker riêng](deploy/app/README.md#broker-riêng-khi-chạy-cùng-somics-mqtt).
 
 ### Cách 2 — Dev local (app chạy npm, broker ngoài)
 
@@ -124,8 +129,9 @@ cp .env.example .env.local   # chỉnh MQTT_URL nếu cần (file .env ở root 
 npm run dev                  # http://localhost:3000
 ```
 
-Mặc định dùng broker public `ws://broker.emqx.io:8083/mqtt` để test nhanh.
-Production nên đổi sang broker riêng (EMQX, HiveMQ, Mosquitto...).
+Dev cần cấu hình `MQTT_URL` trỏ tới broker demo; không có fallback sang broker public.
+Nếu `.env` đã có credential Compose, app dùng `MQTT_APP_USERNAME/MQTT_APP_PASSWORD`
+khi chưa đặt `MQTT_USERNAME/MQTT_PASSWORD`.
 
 ### Deploy production lên Dokploy
 
@@ -162,9 +168,9 @@ chạy trên browser: connect, subscribe, publish không cần cài gì.
 
 | Biến | Ý nghĩa | Mặc định |
 |---|---|---|
-| `MQTT_URL` | URL broker (ws/wss/mqtt/tcp) | `ws://broker.emqx.io:8083/mqtt` |
-| `MQTT_USERNAME` | Tên đăng nhập (nếu có) | — |
-| `MQTT_PASSWORD` | Mật khẩu (nếu có) | — |
+| `MQTT_URL` | URL broker (mqtt/mqtts/ws/wss), bắt buộc | Compose: `mqtt://demo-somics-broker:1883`; dev phải đặt |
+| `MQTT_USERNAME` | Tên đăng nhập MQTT | fallback `MQTT_APP_USERNAME` |
+| `MQTT_PASSWORD` | Mật khẩu MQTT | fallback `MQTT_APP_PASSWORD` |
 | `MQTT_CLIENT_ID_PREFIX` | Tiền tố client ID | `web-uploader` |
 | `MQTT_TOPIC_BASE` | Gốc của các topic | `station/player` |
 | `APP_PUBLIC_URL` | Domain public của app để tạo URL tải file | tự suy ra từ request |
@@ -203,7 +209,7 @@ Base topic: `station/player` (đổi qua `MQTT_TOPIC_BASE` nếu muốn).
      "ok": true,
      "mqtt": {
        "mqttHost": "mqtt.example.com",
-       "mqttPort": 8883,
+       "mqttPort": 8884,
        "mqttTls": true,
        "username": "SOMICS-000001",
        "password": "<random 24 bytes>",
@@ -212,7 +218,7 @@ Base topic: `station/player` (đổi qua `MQTT_TOPIC_BASE` nếu muốn).
      }
    }
    ```
-4. Kết nối `mqtts://<mqttHost>:8883` (TLS, CA cert xem `deploy/emqx/README.md` mục 8),
+4. Kết nối bằng host/port/TLS từ response (ví dụ TLS demo `mqtts://<mqttHost>:8884` sau khi bật TLS, CA cert xem `deploy/emqx/README.md` mục 8),
    subscribe `commandTopic`, publish status định kỳ ≤ 60s/lần vào `statusTopic`:
    ```json
    { "deviceId": "SOMICS-000001", "state": "IDLE", "uptime": 12345 }
@@ -363,7 +369,7 @@ Khi thiết bị bị mất credential (flash xóa, firmware reset...):
 ### Kết nối từ thiết bị nhúng
 
 - Trong mạng tin cậy: `mqtt://<VPS>:1883`
-- Qua Internet (khuyến nghị): `mqtts://<VPS>:8883` (TLS) — xem `deploy/emqx/README.md` mục 8 để tạo chứng chỉ bằng `deploy/emqx/certs/gen-certs.sh`
+- Khi đã bật TLS demo: `mqtts://<domain-demo>:8884` — xem `deploy/emqx/README.md` mục 8 để tạo chứng chỉ bằng `deploy/emqx/certs/gen-certs.sh`
 
 ### 1. `station/player/announcement` (JSON, QoS 1)
 

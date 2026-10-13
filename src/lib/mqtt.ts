@@ -13,6 +13,7 @@
  * globalThis để không bị leak connection mỗi lần sửa code.
  */
 
+import { randomUUID } from "node:crypto";
 import mqtt, { type MqttClient } from "mqtt";
 
 import { touchDevice } from "@/lib/devices";
@@ -46,20 +47,64 @@ declare global {
   var __mqttClient: MqttClient | undefined;
   // eslint-disable-next-line no-var
   var __mqttConnecting: Promise<MqttClient> | undefined;
+  // eslint-disable-next-line no-var
+  var __mqttLastError: string | undefined;
+}
+
+/** Endpoint cho log/API: không chứa username/password trong URL. */
+function brokerEndpoint(value = process.env.MQTT_URL): string {
+  if (!value) return "chưa cấu hình MQTT_URL";
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "MQTT_URL không hợp lệ";
+  }
+}
+
+function connectionError(err: Error): Error {
+  const code = (err as Error & { code?: string | number }).code;
+  let hint: string;
+  if ([4, 5, 134, 135].includes(Number(code))) {
+    hint = "Broker từ chối credential MQTT; kiểm tra MQTT_USERNAME/MQTT_PASSWORD của broker demo (khác tài khoản Dashboard)";
+  } else if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+    hint = "Không resolve được host broker; kiểm tra MQTT_URL và mạng Docker. Host nội bộ chỉ dùng trong cùng network";
+  } else if (code === "ECONNREFUSED") {
+    hint = "Broker chưa mở listener tại host/port này; kiểm tra container và port mapping";
+  } else if (typeof code === "string" && /CERT|TLS|SSL/.test(code)) {
+    hint = "TLS thất bại; kiểm tra hostname, CA và chứng chỉ của đúng broker demo";
+  } else {
+    hint = "Chưa nhận được MQTT CONNACK; kiểm tra host/port, giao thức, firewall và mạng Docker của broker demo";
+  }
+  // Không đưa err.message/URL gốc ra API vì có thể chứa credential.
+  const safeCode = typeof code === "number" || (typeof code === "string" && /^[A-Z0-9_]+$/.test(code))
+    ? ` [${code}]` : "";
+  return new Error(`MQTT ${brokerEndpoint()}${safeCode} — ${hint}`);
 }
 
 function createClient(): MqttClient {
-  const url = process.env.MQTT_URL ?? "mqtt://emqx:1883";
-  const clientId = `${process.env.MQTT_CLIENT_ID_PREFIX ?? "web-uploader"}-${process.pid}`;
+  const url = process.env.MQTT_URL?.trim();
+  if (!url) {
+    throw new Error("Chưa cấu hình MQTT_URL — npm run dev cần .env.local trỏ tới broker demo; Docker Compose tự inject URL nội bộ");
+  }
+  try {
+    if (!["mqtt:", "mqtts:", "ws:", "wss:"].includes(new URL(url).protocol)) throw new Error();
+  } catch {
+    throw new Error("MQTT_URL không hợp lệ — dùng mqtt://, mqtts://, ws:// hoặc wss://");
+  }
+  // PID thường là 1 trong Docker; thêm UUID để nhiều container không kick nhau.
+  const clientId = `${process.env.MQTT_CLIENT_ID_PREFIX ?? "web-uploader"}-${process.pid}-${randomUUID().slice(0, 8)}`;
 
   const client = mqtt.connect(url, {
     clientId,
-    username: process.env.MQTT_USERNAME || undefined,
-    password: process.env.MQTT_PASSWORD || undefined,
+    username: process.env.MQTT_USERNAME || process.env.MQTT_APP_USERNAME || undefined,
+    password: process.env.MQTT_PASSWORD || process.env.MQTT_APP_PASSWORD || undefined,
     keepalive: 30,
     // Tự reconnect mỗi 5s khi đứt kết nối (mqtt.js không hỗ trợ backoff tăng dần,
     // khoảng cố định 5s là hợp lý: không spam broker, không chờ quá lâu)
     reconnectPeriod: 5000,
+    // User có thể chưa được emqx-init tạo lúc app bắt đầu kết nối.
+    reconnectOnConnackError: true,
     resubscribe: true, // tự re-subscribe sau khi reconnect
     connectTimeout: 10_000,
     clean: true,
@@ -67,17 +112,19 @@ function createClient(): MqttClient {
 
   // Log lifecycle để debug trên Dokploy (`docker logs` / Dokploy UI logs)
   client.on("connect", () => {
-    console.log(`[mqtt] connected to ${url} (clientId=${clientId})`);
+    globalThis.__mqttLastError = undefined;
+    console.log(`[mqtt] connected to ${brokerEndpoint(url)} (clientId=${clientId})`);
   });
   client.on("reconnect", () => {
-    console.warn(`[mqtt] reconnecting to ${url}...`);
+    console.warn(`[mqtt] reconnecting to ${brokerEndpoint(url)}...`);
   });
   client.on("close", () => {
     console.warn("[mqtt] connection closed");
   });
   client.on("error", (err) => {
     // Log thay vì crash — thư viện tự reconnect. Lỗi auth sai user sẽ lặp lại ở đây.
-    console.error("[mqtt] client error:", err.message);
+    globalThis.__mqttLastError = connectionError(err).message;
+    console.error("[mqtt] client error:", globalThis.__mqttLastError);
   });
   client.on("offline", () => {
     console.warn("[mqtt] client offline (đang chờ reconnect)");
@@ -126,15 +173,17 @@ export function getMqttClient(): Promise<MqttClient> {
     const client = globalThis.__mqttClient ?? createClient();
     globalThis.__mqttClient = client;
 
-    globalThis.__mqttConnecting = new Promise<MqttClient>((resolve, reject) => {
+    const connecting = new Promise<MqttClient>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error("MQTT connect timeout sau 10s — kiểm tra MQTT_URL/credentials"));
+        cleanup();
+        const error = new Error(`MQTT connect timeout sau 10s (${brokerEndpoint()}) — kiểm tra host/port, giao thức và mạng Docker của broker demo`);
+        globalThis.__mqttLastError = error.message;
+        reject(error);
       }, 10_000);
 
       const onConnect = () => {
         clearTimeout(timeout);
         cleanup();
-        globalThis.__mqttConnecting = undefined;
         resolve(client);
       };
       const onError = (err: Error) => {
@@ -142,8 +191,7 @@ export function getMqttClient(): Promise<MqttClient> {
         cleanup();
         // Không xóa __mqttClient: thư viện đang tự retry, request này fail nhưng
         // các request sau vẫn dùng lại client khi broker lên lại.
-        globalThis.__mqttConnecting = undefined;
-        reject(err);
+        reject(connectionError(err));
       };
       const cleanup = () => {
         client.off("connect", onConnect);
@@ -154,6 +202,11 @@ export function getMqttClient(): Promise<MqttClient> {
       client.once("connect", onConnect);
       client.once("error", onError);
     });
+    const pending = connecting.finally(() => {
+      // Dọn cả nhánh timeout; request sau phải được chờ một lần kết nối mới.
+      if (globalThis.__mqttConnecting === pending) globalThis.__mqttConnecting = undefined;
+    });
+    globalThis.__mqttConnecting = pending;
   }
 
   return globalThis.__mqttConnecting;
@@ -164,12 +217,16 @@ export function getMqttStatus(): {
   connected: boolean;
   reconnecting: boolean;
   clientId: string | null;
+  broker: string;
+  error: string | null;
 } {
   const client = globalThis.__mqttClient;
   return {
     connected: client?.connected ?? false,
     reconnecting: client ? !client.connected && client.reconnecting : false,
     clientId: client?.options.clientId as string | undefined ?? null,
+    broker: brokerEndpoint(),
+    error: client?.connected ? null : globalThis.__mqttLastError ?? null,
   };
 }
 
@@ -267,6 +324,7 @@ export async function closeMqttClient(): Promise<void> {
     await new Promise<void>((resolve) => client.end(false, {}, () => resolve()));
     globalThis.__mqttClient = undefined;
     globalThis.__mqttConnecting = undefined;
+    globalThis.__mqttLastError = undefined;
     console.log("[mqtt] client closed");
   }
 }

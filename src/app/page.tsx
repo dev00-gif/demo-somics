@@ -85,6 +85,8 @@ export default function Home() {
         if (active) {
           if (data.connected) {
             addLog("success", "MQTT broker đã kết nối");
+          } else if (data.error) {
+            addLog("error", `Broker lỗi: ${data.error}`);
           } else if (data.reconnecting) {
             addLog("info", "MQTT đang thử kết nối lại broker...");
           } else {

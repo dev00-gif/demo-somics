@@ -14,7 +14,7 @@ Tài liệu này tập trung vào kết nối. Các domain, mã kích hoạt và
 | CA certificate của broker nếu dùng CA riêng | Firmware dùng để xác minh chứng chỉ server khi kết nối MQTT TLS. |
 | Cấu hình kết nối dự kiến | Backend xác nhận domain/IP public, port và TLS đúng với broker đang chạy. Firmware lấy giá trị chính thức từ response kích hoạt. |
 
-Trước khi bàn giao, team backend cần cấu hình `MQTT_PUBLIC_HOST`, `MQTT_PUBLIC_PORT`, `MQTT_PUBLIC_TLS` và xác nhận thiết bị truy cập được host/port đó từ mạng của mình. **Hai file Docker Compose trong repo đang comment các dòng cấu hình, publish port và mount certificate cho TLS 8883.** Nếu trả `mqttPort: 8883` và `mqttTls: true`, backend phải bật listener TLS tương ứng trước. Xem [hướng dẫn bật TLS cho broker](../deploy/emqx/README.md#8-mqtt-tls--port-8883-khuyến-nghị-cho-thiết-bị-nhúng).
+Trước khi bàn giao, team backend cần cấu hình `MQTT_PUBLIC_HOST`, `MQTT_PUBLIC_PORT`, `MQTT_PUBLIC_TLS` và xác nhận thiết bị truy cập được host/port đó từ mạng của mình. **Hai file Docker Compose trong repo chưa bật TLS demo mặc định.** Full stack mặc định trả TCP `1883`, TLS `false`. Khi bật TLS demo, publish host port `8884` vào listener container `8883`, rồi đặt `MQTT_PUBLIC_PORT=8884`, `MQTT_PUBLIC_TLS=true`. `somics-mqtt` dùng TLS public `8883`, credential và ACL riêng; không dùng endpoint đó với credential demo. Xem [hướng dẫn bật TLS cho broker](../deploy/emqx/README.md#8-mqtt-tls--port-8883-khuyến-nghị-cho-thiết-bị-nhúng).
 
 Firmware cần có HTTP client, MQTT client, khả năng đọc JSON và bộ nhớ NVS/flash để lưu credential. Khi dùng TLS, cấu hình CA tin cậy, kiểm tra hostname và đồng bộ thời gian của thiết bị để kiểm tra hiệu lực chứng chỉ. Không dùng hostname Docker nội bộ `emqx` làm địa chỉ broker cho thiết bị ngoài server.
 
@@ -60,7 +60,7 @@ Response thành công có HTTP `200` và `ok: true`. Ví dụ rút gọn:
   "ok": true,
   "mqtt": {
     "mqttHost": "mqtt.example.com",
-    "mqttPort": 8883,
+    "mqttPort": 8884,
     "mqttTls": true,
     "username": "SOMICS-000001",
     "password": "<MQTT_PASSWORD_DUOC_CAP>",
@@ -138,7 +138,7 @@ Các lỗi HTTP của API kích hoạt có body dạng `{"ok": false, "error": "
 | Kích hoạt trả `403` | Nhờ backend xác nhận thiết bị đã được tạo và mã đúng thiết bị, chưa bị thu hồi. |
 | Kích hoạt trả `409` | Mã đã dùng. Dùng credential đã lưu; nếu mất credential, nhờ backend cấp mã mới. |
 | Kích hoạt trả `502` | Broker hoặc luồng cấp user chưa sẵn sàng; thử lại sau và báo backend nếu lỗi tiếp diễn. |
-| MQTT timeout hoặc connection refused | Kiểm tra Internet, DNS, host, port; nhờ backend kiểm tra listener và firewall. Với TLS 8883, xác nhận đã bật cấu hình TLS trên broker. |
+| MQTT timeout hoặc connection refused | Kiểm tra Internet, DNS, host, port; nhờ backend kiểm tra listener và firewall. Với TLS demo 8884, xác nhận đã bật listener và publish đúng port. |
 | TLS handshake thất bại | Kiểm tra CA, hostname khớp chứng chỉ và thời gian thiết bị. |
 | MQTT từ chối username/password | Dùng credential được trả sau kích hoạt; kiểm tra có bị thay credential do kích hoạt lại hay không. |
 | MQTT connect được nhưng subscribe/publish bị từ chối | Dùng đúng topic và chiều dữ liệu; nếu vẫn lỗi, nhờ backend kiểm tra ACL của user. |
