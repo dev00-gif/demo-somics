@@ -98,7 +98,8 @@ flowchart TD
 ### Cách 1 — Full stack với Docker (broker + app, 1 lệnh)
 
 ```bash
-nano .env                       # điền mật khẩu thật (openssl rand -base64 24)
+cp -n .env.compose.example .env  # giữ .env/password của broker đang chạy
+nano .env                       # điền password Dashboard hiện tại và password MQTT app
 docker compose up -d --build
 ```
 
@@ -106,8 +107,13 @@ Password user MQTT nằm hoàn toàn trong `.env` (không commit): mỗi lần d
 service `emqx-init` tự gọi EMQX API tạo/cập nhật user từ `MQTT_APP_PASSWORD`
 (web-backend, superuser) và `MQTT_DEVICE_PASSWORD` (device-01, device-02).
 
+Full stack bắt buộc có `DASHBOARD_PASSWORD` và `MQTT_APP_PASSWORD`; trên Dokploy
+đặt trong Environment của **service Docker Compose demo** theo `.env.compose.example`.
+`.env.example` ở root dành cho app chạy riêng, dùng tên biến khác. File `.env` trên
+máy dev không được commit nên VPS không tự nhận các secret đó.
+
 > **Trên Dokploy:**
-> - Không cần file `.env` — paste biến vào tab **Environment** của service (tùy chọn, compose có default).
+> - Paste biến từ `.env.compose.example` vào tab **Environment** của service và điền password bắt buộc.
 > - App **không publish port** ra host (tránh đụng port 3000 của Dashboard Dokploy) — truy cập qua
 >   **Domains** tab: thêm domain, port `3000`, service `app`, HTTPS Let's Encrypt. App đã join
 >   `dokploy-network` sẵn trong compose.

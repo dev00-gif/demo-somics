@@ -127,6 +127,24 @@ curl -s "https://<domain-dokploy>/api/project.all" -H "x-api-key: <key>" \
 
 ## 5. Troubleshooting
 
+Nếu broker Healthy nhưng deploy báo `emqx-init ... exit 2`, đọc log riêng của
+container init; log Compose chỉ cho biết bước thất bại:
+
+```bash
+docker logs demosomics-demosomics-ftbr2y-emqx-init-1 --tail 80
+```
+
+Trong Environment của **service Compose demo**, cần `DASHBOARD_USERNAME=admin`,
+`DASHBOARD_PASSWORD` là password Dashboard demo hiện tại và `MQTT_APP_PASSWORD`
+là password user MQTT app. Dùng `.env.compose.example` cho full stack. Các biến
+`EMQX_DASHBOARD_PASSWORD`/`MQTT_PASSWORD` trong template app chạy riêng không thay
+thế hai biến Compose này. `.env` trên máy dev được ignore và không tự lên VPS.
+
+Script mới báo rõ biến thiếu, lỗi login 401/403, lỗi API hoặc lỗi đồng bộ user.
+Thay env không tự đổi password Dashboard đã lưu trong volume; cần dùng password
+hiện tại hoặc đổi password Dashboard qua tài khoản quản trị trước rồi đồng bộ env.
+Giữ app chờ init hoàn tất để tránh khởi động với user MQTT chưa được tạo.
+
 | Hiện tượng | Xử lý |
 |---|---|
 | `/api/broker-status` → `connected: false` | Xem log app: `[mqtt] reconnecting...` → sai `MQTT_URL`/credentials hoặc app chưa cùng mạng với EMQX (mục 2, bước 5). Log `[mqtt] connected` = OK. |
