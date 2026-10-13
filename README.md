@@ -1,5 +1,7 @@
 # MQTT Station — Gửi bản tin & file nhạc qua MQTT
 
+Tài liệu bàn giao cho bên IoT: [Hướng dẫn kết nối thiết bị IoT với SOMICS](docs/iot-connection.md).
+
 Ứng dụng **Next.js** (App Router + TypeScript + Tailwind) gồm:
 
 - **FE**: giao diện web có nút upload file nhạc + form gửi bản tin text.

@@ -1,27 +1,70 @@
 /**
  * EMQX MANAGEMENT API CLIENT — cấp/thu hồi user MQTT động từ backend.
  *
- * Cùng cơ chế với deploy/emqx/scripts/init-users.sh:
- *   1. POST /api/v5/login (Dashboard credentials) → Bearer token
- *   2. PUT/POST /api/v5/authentication/password_based:built_in_database/users
+ * API key/secret (Basic auth) được ưu tiên; nếu không có thì đăng nhập
+ * Dashboard lấy Bearer token như deploy/emqx/scripts/init-users.sh.
  *
  * Biến môi trường:
- *   EMQX_API_URL        — mặc định http://emqx:18083 (mạng nội bộ Docker)
+ *   EMQX_API_URL        — http://emqx:18083 hoặc http://emqx:18083/api/v5
+ *   EMQX_API_KEY / EMQX_API_SECRET — tài khoản API riêng (tùy chọn)
  *   EMQX_DASHBOARD_USERNAME / EMQX_DASHBOARD_PASSWORD — credentials admin
  *
  * Token dashboard cache 55 phút (EMQX token hết hạn sau ~1h), tự login lại khi
  * hết hạn. Fail → throw để /api/iot/activate trả 502 kèm message rõ ràng.
  */
 
-const API_URL = process.env.EMQX_API_URL ?? "http://emqx:18083";
-const API_BASE = `${API_URL}/api/v5`;
+type ApiStep = "config" | "login" | "authorization" | "user" | "acl" | "health";
 
-const DASH_USER = process.env.EMQX_DASHBOARD_USERNAME ?? "admin";
-const DASH_PASS = process.env.EMQX_DASHBOARD_PASSWORD ?? "";
+/** Chỉ giữ mã lỗi, không đưa response/password/token của broker ra log hoặc API. */
+export class EmqxApiError extends Error {
+  readonly step: ApiStep;
+  readonly status: number | null;
+  readonly code: string | null;
+
+  constructor(step: ApiStep, status: number | null, code: unknown = null) {
+    const safeCode = typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)
+      ? code : null;
+    const hint = status === 401
+      ? "Kiểm tra credential quản trị EMQX; password trong env không tự đổi password đã lưu trên broker"
+      : status === 403
+        ? "Kiểm tra quyền ghi của tài khoản quản trị/API key EMQX"
+        : status === 404
+          ? "Kiểm tra URL API và authenticator/authorizer của đúng broker"
+          : "Kiểm tra cấu hình và log EMQX trên server";
+    super(`EMQX ${step} thất bại${status === null ? "" : ` (HTTP ${status})`}${safeCode ? ` [${safeCode}]` : ""} — ${hint}`);
+    this.name = "EmqxApiError";
+    this.step = step;
+    this.status = status;
+    this.code = safeCode;
+  }
+}
+
+export function normalizeEmqxApiUrl(value: string): string {
+  let url: URL;
+  try { url = new URL(value.trim()); } catch {
+    throw new EmqxApiError("config", null, "INVALID_API_URL");
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new EmqxApiError("config", null, "INVALID_API_URL");
+  }
+  const base = url.href.replace(/\/+$/, "");
+  return base.endsWith("/api/v5") ? base : `${base}/api/v5`;
+}
+
+function apiBase(): string {
+  return normalizeEmqxApiUrl(process.env.EMQX_API_URL || "http://emqx:18083");
+}
+
+const DASH_USER = process.env.EMQX_DASHBOARD_USERNAME || process.env.DASHBOARD_USERNAME || "admin";
+const DASH_PASS = process.env.EMQX_DASHBOARD_PASSWORD || process.env.DASHBOARD_PASSWORD || "";
+const API_KEY = process.env.EMQX_API_KEY || "";
+const API_SECRET = process.env.EMQX_API_SECRET || "";
 
 interface CachedToken {
   token: string;
   expiresAt: number;
+  apiBase: string;
+  username: string;
 }
 
 declare global {
@@ -31,30 +74,58 @@ declare global {
 
 const TOKEN_TTL_MS = 55 * 60 * 1000; // EMQX token ttl ~1h → cache 55m
 
-async function login(): Promise<string> {
-  const res = await fetch(`${API_BASE}/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: DASH_USER, password: DASH_PASS }),
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `EMQX login thất bại (HTTP ${res.status}) — kiểm tra EMQX_DASHBOARD_USERNAME/PASSWORD`,
-    );
+async function requestApi(
+  method: string, path: string, step: ApiStep, body?: unknown, authorization?: string,
+): Promise<{ status: number; data: unknown }> {
+  let res: Response;
+  const url = `${apiBase()}${path}`;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        Accept: "application/json", "Content-Type": "application/json",
+        ...(authorization ? { Authorization: authorization } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(5_000),
+      cache: "no-store",
+      redirect: "error",
+    });
+    // Đọc body trong timeout của request; response 204 không có JSON.
+    const text = await res.text();
+    let data: unknown = null;
+    try { data = text ? JSON.parse(text) : null; } catch { /* Proxy có thể trả HTML. */ }
+    return { status: res.status, data };
+  } catch {
+    throw new EmqxApiError(step, null, "API_UNREACHABLE");
   }
-  const data = (await res.json()) as { token?: string };
-  if (!data.token) throw new Error("EMQX login response thiếu token");
+}
+
+function requireSuccess(result: { status: number; data: unknown }, step: ApiStep): void {
+  if (result.status < 200 || result.status >= 300) {
+    const code = (result.data as { code?: unknown } | null)?.code;
+    throw new EmqxApiError(step, result.status, code);
+  }
+}
+
+async function login(): Promise<string> {
+  if (!DASH_PASS) throw new EmqxApiError("config", null, "MISSING_DASHBOARD_PASSWORD");
+  const result = await requestApi("POST", "/login", "login", { username: DASH_USER, password: DASH_PASS });
+  requireSuccess(result, "login");
+  const data = result.data as { token?: string } | null;
+  if (typeof data?.token !== "string" || !data.token) {
+    throw new EmqxApiError("login", result.status, "MISSING_LOGIN_TOKEN");
+  }
   return data.token;
 }
 
 async function getBearerToken(forceRefresh = false): Promise<string> {
   const cached = globalThis.__emqxToken;
-  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+  if (!forceRefresh && cached && cached.expiresAt > Date.now() && cached.apiBase === apiBase() && cached.username === DASH_USER) {
     return cached.token;
   }
   const token = await login();
-  globalThis.__emqxToken = { token, expiresAt: Date.now() + TOKEN_TTL_MS };
+  globalThis.__emqxToken = { token, expiresAt: Date.now() + TOKEN_TTL_MS, apiBase: apiBase(), username: DASH_USER };
   return token;
 }
 
@@ -63,32 +134,21 @@ async function callApi<T>(
   method: "GET" | "PUT" | "POST" | "DELETE",
   path: string,
   body?: unknown,
+  step: ApiStep = "user",
 ): Promise<{ status: number; data: T | null }> {
-  let token = await getBearerToken();
-  let res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(5_000),
-  });
-
-  if (res.status === 401) {
-    token = await getBearerToken(true);
-    res = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(5_000),
-    });
+  const useApiKey = Boolean(API_KEY || API_SECRET);
+  if (useApiKey && (!API_KEY || !API_SECRET)) {
+    throw new EmqxApiError("config", null, "INCOMPLETE_API_CREDENTIALS");
   }
-
-  let data: T | null = null;
-  try {
-    data = (await res.json()) as T;
-  } catch {
-    // response rỗng hoặc không JSON — OK với DELETE
+  const authorization = useApiKey
+    ? `Basic ${Buffer.from(`${API_KEY}:${API_SECRET}`).toString("base64")}`
+    : `Bearer ${await getBearerToken()}`;
+  let result = await requestApi(method, path, step, body, authorization);
+  if (result.status === 401 && !useApiKey) {
+    globalThis.__emqxToken = undefined;
+    result = await requestApi(method, path, step, body, `Bearer ${await getBearerToken(true)}`);
   }
-  return { status: res.status, data };
+  return { status: result.status, data: result.data as T | null };
 }
 
 // ==============================================================================
@@ -97,7 +157,7 @@ async function callApi<T>(
 
 /**
  * Tạo hoặc cập nhật user MQTT trong authenticator built-in database.
- * Trả true nếu tạo/cập nhật thành công (HTTP 200/201), false nếu khác.
+ * Trả true khi thành công; lỗi giữ nguyên bước, HTTP status và mã EMQX.
  */
 export async function upsertMqttUser(
   username: string,
@@ -107,21 +167,23 @@ export async function upsertMqttUser(
   const path = `/authentication/password_based:built_in_database/users/${encodeURIComponent(username)}`;
 
   // PUT để update — nếu user chưa tồn tại, EMQX trả 404 → POST tạo mới
-  let { status } = await callApi<unknown>("PUT", path, {
+  const updateBody = {
     password,
     is_superuser: isSuperuser,
-  });
+  };
+  let result = await callApi<unknown>("PUT", path, updateBody);
 
-  if (status === 404) {
-    const created = await callApi<unknown>(
+  if (result.status === 404) {
+    result = await callApi<unknown>(
       "POST",
       "/authentication/password_based:built_in_database/users",
       { user_id: username, password, is_superuser: isSuperuser },
     );
-    status = created.status;
+    // Một request khác có thể tạo user giữa PUT và POST.
+    if (result.status === 409) result = await callApi<unknown>("PUT", path, updateBody);
   }
-
-  return status === 200 || status === 201;
+  requireSuccess(result, "user");
+  return true;
 }
 
 /** Xóa user MQTT (thu hồi credential khi device bị deactivate) */
@@ -140,17 +202,40 @@ export async function deleteMqttUser(username: string): Promise<boolean> {
 /**
  * Đảm bảo authorizer built_in_database đã được tạo trên broker.
  * Compose chỉ khai báo authentication (built_in_database) — authorization
- * nguồn này phải tạo qua API nếu chưa có (idempotent, bỏ qua 400 đã tồn tại).
+ * nguồn này phải tạo qua API nếu chưa có. Không coi mọi HTTP 400 là "đã có".
+ * Nguồn database phải đứng trước file ACL để deny/allow theo thiết bị có hiệu lực.
  */
 export async function ensureBuiltInAuthzSource(): Promise<void> {
-  const { status } = await callApi<unknown>(
-    "POST",
-    "/authorization/sources",
-    { enable: true, type: "built_in_database", max_rules: 100 },
-  );
-  // 200/201 = tạo mới OK; 400 = đã tồn tại (idempotent) — cả hai đều coi là OK
-  if (status !== 200 && status !== 201 && status !== 400) {
-    throw new Error(`Tạo authorizer built_in_database thất bại (HTTP ${status})`);
+  type Source = { type: string; enable: boolean };
+  async function sources(): Promise<Source[]> {
+    const result = await callApi<{ sources?: Source[] }>("GET", "/authorization/sources", undefined, "authorization");
+    requireSuccess(result, "authorization");
+    if (!Array.isArray(result.data?.sources)) {
+      throw new EmqxApiError("authorization", result.status, "INVALID_SOURCE_RESPONSE");
+    }
+    return result.data.sources;
+  }
+  let list = await sources();
+  let index = list.findIndex((source) => source.type === "built_in_database");
+  if (index === -1) {
+    const created = await callApi<unknown>("POST", "/authorization/sources",
+      { enable: true, type: "built_in_database", max_rules: 100 }, "authorization");
+    if (created.status !== 400 && created.status !== 409) requireSuccess(created, "authorization");
+    // Bao gồm trường hợp POST 204 và một request đồng thời đã tạo source.
+    list = await sources();
+    index = list.findIndex((source) => source.type === "built_in_database");
+    if (index === -1) {
+      requireSuccess(created, "authorization");
+      throw new EmqxApiError("authorization", null, "AUTHORIZER_NOT_FOUND");
+    }
+  }
+  if (list[index].enable !== true) {
+    throw new EmqxApiError("authorization", null, "AUTHORIZER_DISABLED");
+  }
+  if (index > 0) {
+    const moved = await callApi<unknown>("POST", "/authorization/sources/built_in_database/move",
+      { position: "top" }, "authorization");
+    requireSuccess(moved, "authorization");
   }
 }
 
@@ -193,12 +278,14 @@ export async function setDeviceAcl(
     },
   ];
 
-  const { status } = await callApi<unknown>(
+  const result = await callApi<unknown>(
     "PUT",
     `/authorization/sources/built_in_database/rules/users/${encodeURIComponent(username)}`,
     { username, rules },
+    "acl",
   );
-  return status === 200 || status === 201;
+  requireSuccess(result, "acl");
+  return true;
 }
 
 /** Xóa ACL của user (gọi khi xóa device) */
@@ -206,6 +293,8 @@ export async function deleteDeviceAcl(username: string): Promise<boolean> {
   const { status } = await callApi<unknown>(
     "DELETE",
     `/authorization/sources/built_in_database/rules/users/${encodeURIComponent(username)}`,
+    undefined,
+    "acl",
   );
   return status === 200 || status === 204 || status === 404;
 }
@@ -213,7 +302,8 @@ export async function deleteDeviceAcl(username: string): Promise<boolean> {
 /** Kiểm tra EMQX API reachable + login được (cho trang admin / health check) */
 export async function checkEmqxApi(): Promise<{ ok: boolean; error?: string }> {
   try {
-    await getBearerToken();
+    const result = await callApi<unknown>("GET", "/authentication/password_based:built_in_database", undefined, "health");
+    requireSuccess(result, "health");
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
